@@ -1,0 +1,12 @@
+[package]
+name = "tracepoint"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+static-keys = "0.7.0"
+paste = "=1.0.14"
+
+
+[dev-dependencies]
+spin = "0.9"

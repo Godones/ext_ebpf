@@ -1,0 +1,6 @@
+[workspace]
+
+members = ["kprobe", "tracepoint"]
+
+
+resolver = "2"
