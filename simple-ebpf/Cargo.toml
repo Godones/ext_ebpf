@@ -1,0 +1,9 @@
+[package]
+name = "simple-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+
+# abort if panic

@@ -89,7 +89,7 @@ impl KprobeBuilder {
     fn replace_inst(&self) -> Arc<Rv64KprobePoint> {
         let address = self.symbol_addr + self.offset;
         let inst_16 = unsafe { core::ptr::read(address as *const u16) };
-        // See https://elixir.bootlin.com/linux/v6.10.2/source/arch/riscv/kernel/probes/kprobes.c#L68
+        // See <https://elixir.bootlin.com/linux/v6.10.2/source/arch/riscv/kernel/probes/kprobes.c#L68>
         let is_inst_16 = if (inst_16 & INSN_LENGTH_MASK) == INSN_LENGTH_32 {
             false
         } else {

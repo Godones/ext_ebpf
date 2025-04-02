@@ -1,6 +1,6 @@
 [workspace]
 
-members = ["kprobe", "tracepoint"]
+members = ["bpf-basic", "kprobe", "tracepoint", "rbpf", "polyhal"]
 
 
 resolver = "2"

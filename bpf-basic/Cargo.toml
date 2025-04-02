@@ -1,0 +1,11 @@
+[package]
+name = "bpf-basic"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+printf-compat = { version = "0.1.1", default-features = false }
+bitflags = "2.9"
+lru = "0.13"
+
+log = "0.4"
