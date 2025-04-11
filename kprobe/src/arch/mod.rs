@@ -23,32 +23,36 @@ pub type KprobePoint = Rv64KprobePoint;
 pub type KprobePoint = LA64KprobePoint;
 
 pub trait ProbeArgs: Send {
-    /// 用于使用者转换到特定架构下的TrapFrame
+    /// User can down cast to get the real type
     fn as_any(&self) -> &dyn Any;
-    /// 返回导致break异常的地址
+    /// Return the address of the instruction that caused the break exception
     fn break_address(&self) -> usize;
-    /// 返回导致单步执行异常的地址
+    /// Return the address of the instruction that caused the single step exception
+    ///
+    /// For x86_64, it is the address of the instruction that caused the single step exception
+    /// For other architectures, it is the address of the instruction that caused the break exception
     fn debug_address(&self) -> usize;
 }
 
 pub trait KprobeOps: Send {
-    /// # 返回探测点的下一条指令地址
-    ///
-    /// 执行流需要回到正常的路径中，在执行完探测点的指令后，需要返回到下一条指令
+    /// The address of the instruction that program should return to
     fn return_address(&self) -> usize;
-    /// # 返回单步执行的指令地址
+
+    /// The address of the instruction that saved the original instruction
     ///
-    /// 通常探测点的处的原指令被保存在一个数组当中。根据架构的不同, 在保存的指令后面，可能会填充必要的指令。
-    /// 例如x86架构下支持单步执行的特性， 而其它架构下通常没有，因此我们使用break异常来进行模拟，所以会填充
-    /// 一条断点指令。
+    /// Usually, the original instruction at the probe point is saved in an array.
+    /// Depending on the architecture, necessary instructions may be filled in after
+    /// the saved instruction. For example, x86 architecture supports single-step execution,
+    /// while other architectures usually do not. Therefore, we use the break exception to
+    /// simulate it, so a breakpoint instruction will be filled in.
     fn single_step_address(&self) -> usize;
-    /// # 返回单步执行指令触发异常的地址
-    ///
-    /// 其值等于`single_step_address`的值加上探测点指令的长度
+
+    /// The address of the instruction that caused the single step exception
     fn debug_address(&self) -> usize;
-    /// # 返回设置break断点的地址
+
+    /// The address of the instruction that caused the break exception
     ///
-    /// 其值与探测点地址相等
+    /// It is usually equal to the address of the instruction that used to set the probe point.
     fn break_address(&self) -> usize;
 }
 
@@ -60,7 +64,7 @@ impl ProbeHandler {
     pub fn new(func: fn(&dyn ProbeArgs)) -> Self {
         ProbeHandler { func }
     }
-    /// 调用探测点处理函数
+
     pub fn call(&self, trap_frame: &dyn ProbeArgs) {
         (self.func)(trap_frame);
     }
@@ -119,9 +123,7 @@ impl KprobeBuilder {
         self
     }
 
-    /// 获取探测点的地址
-    ///
-    /// 探测点的地址 == break指令的地址
+    /// Get the address of the instruction that should be probed.
     pub fn probe_addr(&self) -> usize {
         self.symbol_addr + self.offset
     }
@@ -153,40 +155,51 @@ impl Debug for KprobeBasic {
 }
 
 impl KprobeBasic {
+    /// Call the pre handler function.
     pub fn call_pre_handler(&self, trap_frame: &dyn ProbeArgs) {
         self.pre_handler.call(trap_frame);
     }
 
+    /// Call the post handler function.
     pub fn call_post_handler(&self, trap_frame: &dyn ProbeArgs) {
         self.post_handler.call(trap_frame);
     }
 
+    /// Call the fault handler function.
     pub fn call_fault_handler(&self, trap_frame: &dyn ProbeArgs) {
         self.fault_handler.call(trap_frame);
     }
 
+    /// Call the event callback function.
     pub fn call_event_callback(&self, trap_frame: &dyn ProbeArgs) {
         if let Some(ref call_back) = self.event_callback {
             call_back.call(trap_frame);
         }
     }
 
+    /// Set the event callback function.
+    ///
+    /// Likely to post_handler.
     pub fn update_event_callback(&mut self, callback: Box<dyn CallBackFunc>) {
         self.event_callback = Some(callback);
     }
 
+    /// Disable the probe point.
     pub fn disable(&mut self) {
         self.enable = false;
     }
 
+    /// Enable the probe point.
     pub fn enable(&mut self) {
         self.enable = true;
     }
 
+    /// Check if the probe point is enabled.
     pub fn is_enabled(&self) -> bool {
         self.enable
     }
-    /// 返回探测点的函数名称
+
+    /// Get the function name of the probe point.
     pub fn symbol(&self) -> Option<&str> {
         self.symbol.as_deref()
     }

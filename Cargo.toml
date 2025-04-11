@@ -1,6 +1,6 @@
 [workspace]
 
-members = ["bpf-basic", "kprobe", "tracepoint", "rbpf", "polyhal"]
-
+members = ["bpf-basic", "kprobe", "tracepoint", "rbpf", "simple-ebpf"]
+exclude = ["polyhal"]
 
 resolver = "2"

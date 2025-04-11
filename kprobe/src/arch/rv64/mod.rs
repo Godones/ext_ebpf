@@ -83,9 +83,8 @@ impl KprobeBuilder {
         };
         (kprobe, probe_point)
     }
-    /// # 安装kprobe
-    ///
-    /// 不同的架构下需要保存原指令，然后替换为断点指令
+
+    /// Replace the instruction at the specified address with a breakpoint instruction.
     fn replace_inst(&self) -> Arc<Rv64KprobePoint> {
         let address = self.symbol_addr + self.offset;
         let inst_16 = unsafe { core::ptr::read(address as *const u16) };
