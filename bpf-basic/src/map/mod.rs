@@ -245,23 +245,22 @@ pub struct BpfMapGetNextKeyArg {
 /// See <https://ebpf-docs.dylanreimerink.nl/linux/syscall/BPF_MAP_UPDATE_ELEM/>
 pub fn bpf_map_update_elem<F: KernelAuxiliaryOps>(arg: BpfMapUpdateArg) -> Result<()> {
     log::info!("<bpf_map_update_elem>: {:#x?}", arg);
-    let unified_map = F::get_unified_map(arg.map_fd)?;
-    let meta = unified_map.map_meta();
-    let key_size = meta.key_size as usize;
-    let value_size = meta.value_size as usize;
-
-    let key = F::transmute_buf(arg.key as *const u8, key_size)?;
-    let value = F::transmute_buf_mut(arg.value as *mut u8, value_size)?;
-    unified_map.map_mut().update_elem(key, value, arg.flags)?;
+    let res = F::get_unified_map_from_fd(arg.map_fd, |unified_map| {
+        let meta = unified_map.map_meta();
+        let key_size = meta.key_size as usize;
+        let value_size = meta.value_size as usize;
+        let key = F::transmute_buf(arg.key as *const u8, key_size)?;
+        let value = F::transmute_buf_mut(arg.value as *mut u8, value_size)?;
+        unified_map.map_mut().update_elem(key, value, arg.flags)
+    });
     log::info!("bpf_map_update_elem ok");
-    Ok(())
+    res
 }
 
 pub fn bpf_map_freeze<F: KernelAuxiliaryOps>(arg: BpfMapUpdateArg) -> Result<()> {
     let map_fd = arg.map_fd;
     log::info!("<bpf_map_freeze>: map_fd: {:}", map_fd);
-    let unified_map = F::get_unified_map(map_fd)?;
-    unified_map.map().freeze()
+    F::get_unified_map_from_fd(map_fd, |unified_map| unified_map.map().freeze())
 }
 
 ///  Look up an element by key in a specified map and return its value.
@@ -269,20 +268,21 @@ pub fn bpf_map_freeze<F: KernelAuxiliaryOps>(arg: BpfMapUpdateArg) -> Result<()>
 /// See <https://ebpf-docs.dylanreimerink.nl/linux/syscall/BPF_MAP_LOOKUP_ELEM/>
 pub fn bpf_lookup_elem<F: KernelAuxiliaryOps>(arg: BpfMapUpdateArg) -> Result<()> {
     // info!("<bpf_lookup_elem>: {:#x?}", arg);
-    let unified_map = F::get_unified_map(arg.map_fd)?;
-    let meta = unified_map.map_meta();
-    let key_size = meta.key_size as usize;
-    let value_size = meta.value_size as usize;
-    let key = F::transmute_buf(arg.key as *const u8, key_size)?;
-    let value = F::transmute_buf_mut(arg.value as *mut u8, value_size)?;
-    let map = unified_map.map_mut();
-    let r_value = map.lookup_elem(key)?;
-    if let Some(r_value) = r_value {
-        value.copy_from_slice(r_value[..value_size].as_ref());
-        Ok(())
-    } else {
-        Err(BpfError::NotFound)
-    }
+    F::get_unified_map_from_fd(arg.map_fd, |unified_map| {
+        let meta = unified_map.map_meta();
+        let key_size = meta.key_size as usize;
+        let value_size = meta.value_size as usize;
+        let key = F::transmute_buf(arg.key as *const u8, key_size)?;
+        let value = F::transmute_buf_mut(arg.value as *mut u8, value_size)?;
+        let map = unified_map.map_mut();
+        let r_value = map.lookup_elem(key)?;
+        if let Some(r_value) = r_value {
+            value.copy_from_slice(r_value[..value_size].as_ref());
+            Ok(())
+        } else {
+            Err(BpfError::NotFound)
+        }
+    })
 }
 /// Look up an element by key in a specified map and return the key of the next element.
 ///
@@ -293,19 +293,20 @@ pub fn bpf_lookup_elem<F: KernelAuxiliaryOps>(arg: BpfMapUpdateArg) -> Result<()
 /// See <https://ebpf-docs.dylanreimerink.nl/linux/syscall/BPF_MAP_GET_NEXT_KEY/>
 pub fn bpf_map_get_next_key<F: KernelAuxiliaryOps>(arg: BpfMapGetNextKeyArg) -> Result<()> {
     // info!("<bpf_map_get_next_key>: {:#x?}", arg);
-    let unified_map = F::get_unified_map(arg.map_fd)?;
-    let meta = unified_map.map_meta();
-    let key_size = meta.key_size as usize;
-    let map = unified_map.map_mut();
-    let next_key = F::transmute_buf_mut(arg.next_key as *mut u8, key_size)?;
-    if let Some(key_ptr) = arg.key {
-        let key = F::transmute_buf(key_ptr as *const u8, key_size)?;
-        map.get_next_key(Some(key), next_key)?;
-    } else {
-        map.get_next_key(None, next_key)?;
-    };
-    // info!("next_key: {:?}", next_key);
-    Ok(())
+    F::get_unified_map_from_fd(arg.map_fd, |unified_map| {
+        let meta = unified_map.map_meta();
+        let key_size = meta.key_size as usize;
+        let map = unified_map.map_mut();
+        let next_key = F::transmute_buf_mut(arg.next_key as *mut u8, key_size)?;
+        if let Some(key_ptr) = arg.key {
+            let key = F::transmute_buf(key_ptr as *const u8, key_size)?;
+            map.get_next_key(Some(key), next_key)?;
+        } else {
+            map.get_next_key(None, next_key)?;
+        };
+        // info!("next_key: {:?}", next_key);
+        Ok(())
+    })
 }
 
 /// Look up and delete an element by key in a specified map.
@@ -318,12 +319,12 @@ pub fn bpf_map_get_next_key<F: KernelAuxiliaryOps>(arg: BpfMapGetNextKeyArg) -> 
 /// See <https://ebpf-docs.dylanreimerink.nl/linux/syscall/BPF_MAP_DELETE_ELEM/>
 pub fn bpf_map_delete_elem<F: KernelAuxiliaryOps>(arg: BpfMapUpdateArg) -> Result<()> {
     // info!("<bpf_map_delete_elem>: {:#x?}", arg);
-    let unified_map = F::get_unified_map(arg.map_fd)?;
-    let meta = unified_map.map_meta();
-    let key_size = meta.key_size as usize;
-
-    let key = F::transmute_buf(arg.key as *const u8, key_size)?;
-    unified_map.map_mut().delete_elem(key)
+    F::get_unified_map_from_fd(arg.map_fd, |unified_map| {
+        let meta = unified_map.map_meta();
+        let key_size = meta.key_size as usize;
+        let key = F::transmute_buf(arg.key as *const u8, key_size)?;
+        unified_map.map_mut().delete_elem(key)
+    })
 }
 
 /// Iterate and fetch multiple elements in a map.
@@ -358,12 +359,12 @@ pub fn bpf_map_lookup_batch<F: KernelAuxiliaryOps>(_arg: BpfMapUpdateArg) -> Res
 /// See <https://ebpf-docs.dylanreimerink.nl/linux/syscall/BPF_MAP_LOOKUP_AND_DELETE_ELEM/>
 pub fn bpf_map_lookup_and_delete_elem<F: KernelAuxiliaryOps>(arg: BpfMapUpdateArg) -> Result<()> {
     // info!("<bpf_map_lookup_and_delete_elem>: {:#x?}", arg);
-    let unified_map = F::get_unified_map(arg.map_fd)?;
-    let meta = unified_map.map_meta();
-    let key_size = meta.key_size as usize;
-    let value_size = meta.value_size as usize;
-
-    let key = F::transmute_buf(arg.key as *const u8, key_size)?;
-    let value = F::transmute_buf_mut(arg.value as *mut u8, value_size)?;
-    unified_map.map_mut().lookup_and_delete_elem(key, value)
+    F::get_unified_map_from_fd(arg.map_fd, |unified_map| {
+        let meta = unified_map.map_meta();
+        let key_size = meta.key_size as usize;
+        let value_size = meta.value_size as usize;
+        let key = F::transmute_buf(arg.key as *const u8, key_size)?;
+        let value = F::transmute_buf_mut(arg.value as *mut u8, value_size)?;
+        unified_map.map_mut().lookup_and_delete_elem(key, value)
+    })
 }

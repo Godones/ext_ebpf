@@ -32,9 +32,13 @@ impl core::error::Error for BpfError {}
 /// be implemented by the kernel or a kernel-like environment.
 pub trait KernelAuxiliaryOps {
     /// Get a unified map from a pointer.
-    fn get_unified_map_from_ptr<'a>(ptr: *const u8) -> Result<&'a mut UnifiedMap>;
+    fn get_unified_map_from_ptr<F, R>(ptr: *const u8, func: F) -> Result<R>
+    where
+        F: FnOnce(&mut UnifiedMap) -> Result<R>;
     /// Get a unified map from a file descriptor.
-    fn get_unified_map<'a>(map_fd: u32) -> Result<&'a mut UnifiedMap>;
+    fn get_unified_map_from_fd<F, R>(map_fd: u32, func: F) -> Result<R>
+    where
+        F: FnOnce(&mut UnifiedMap) -> Result<R>;
     /// Transmute a pointer to a buffer of bytes into a slice.
     fn transmute_buf<'a>(ptr: *const u8, size: usize) -> Result<&'a [u8]>;
     /// Transmute a mutable pointer to a buffer of bytes into a mutable slice.
