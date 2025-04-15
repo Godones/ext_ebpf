@@ -14,7 +14,6 @@ fn round_up(x: usize, align: usize) -> usize {
 }
 
 pub type BpfCallBackFn = fn(key: &[u8], value: &[u8], ctx: *const u8) -> i32;
-
 pub trait BpfMapCommonOps: Send + Sync + Debug {
     /// Lookup an element in the map.
     ///
@@ -87,13 +86,13 @@ pub trait BpfMapCommonOps: Send + Sync + Debug {
 }
 
 pub trait PerCpuVariantsOps: Sync + Send + Debug {
-    fn create<T: Clone>(value: T) -> Option<Box<dyn PerCpuVariants<T>>>;
+    fn create<T: Clone + Sync + Send + 'static>(value: T) -> Option<Box<dyn PerCpuVariants<T>>>;
     fn num_cpus() -> u32;
 }
 
 /// PerCpuVariants is a trait for per-cpu data structures.
 #[allow(clippy::mut_from_ref)]
-pub trait PerCpuVariants<T: Clone>: Sync + Send + Debug {
+pub trait PerCpuVariants<T: Clone + Sync + Send>: Sync + Send + Debug {
     /// Get the per-cpu data for the current CPU.
     fn get(&self) -> &T;
     /// Get the per-cpu data for the current CPU.
@@ -127,7 +126,7 @@ bitflags::bitflags! {
         const BPF_F_LOCK = 4;
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BpfMapMeta {
     pub map_type: BpfMapType,
     pub key_size: u32,
@@ -367,4 +366,74 @@ pub fn bpf_map_lookup_and_delete_elem<F: KernelAuxiliaryOps>(arg: BpfMapUpdateAr
         let value = F::transmute_buf_mut(arg.value as *mut u8, value_size)?;
         unified_map.map_mut().lookup_and_delete_elem(key, value)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, vec::Vec};
+    use core::fmt::Debug;
+
+    use super::{PerCpuVariants, PerCpuVariantsOps};
+
+    #[derive(Debug)]
+    pub struct DummyPerCpuCreator;
+
+    #[derive(Debug)]
+    pub struct DummyPerCpuCreatorFalse;
+
+    pub struct DummyPerCpuVariants<T>(Vec<T>);
+
+    impl<T> Debug for DummyPerCpuVariants<T> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_tuple("DummyPerCpuVariants").finish()
+        }
+    }
+
+    impl<T: Clone + Sync + Send> PerCpuVariants<T> for DummyPerCpuVariants<T> {
+        fn get(&self) -> &T {
+            &self.0[0]
+        }
+
+        fn get_mut(&self) -> &mut T {
+            unsafe { &mut *(self.0.as_ptr() as *mut T) }
+        }
+
+        unsafe fn force_get(&self, cpu: u32) -> &T {
+            &self.0[cpu as usize]
+        }
+
+        unsafe fn force_get_mut(&self, cpu: u32) -> &mut T {
+            let ptr = self.0.as_ptr();
+            let ptr = ptr.add(cpu as usize) as *mut T;
+            &mut *ptr
+        }
+    }
+
+    impl PerCpuVariantsOps for DummyPerCpuCreator {
+        fn create<T: Clone + Sync + Send + 'static>(
+            value: T,
+        ) -> Option<Box<dyn PerCpuVariants<T>>> {
+            let mut vec = Vec::new();
+            for _ in 0..Self::num_cpus() {
+                vec.push(value.clone());
+            }
+            Some(Box::new(DummyPerCpuVariants(vec)))
+        }
+
+        fn num_cpus() -> u32 {
+            1
+        }
+    }
+
+    impl PerCpuVariantsOps for DummyPerCpuCreatorFalse {
+        fn create<T: Clone + Sync + Send + 'static>(
+            _value: T,
+        ) -> Option<Box<dyn PerCpuVariants<T>>> {
+            None
+        }
+
+        fn num_cpus() -> u32 {
+            0
+        }
+    }
 }

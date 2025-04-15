@@ -1,5 +1,6 @@
 #![no_std]
 #![feature(c_variadic)]
+#![allow(unused)]
 extern crate alloc;
 use map::UnifiedMap;
 mod helper;
@@ -8,7 +9,7 @@ pub mod map;
 
 pub type Result<T> = core::result::Result<T, BpfError>;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BpfError {
     InvalidArgument,
     NotSupported,

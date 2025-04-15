@@ -38,3 +38,9 @@ pub enum BpfMapType {
     BPF_MAP_TYPE_ARENA = 33,
     __MAX_BPF_MAP_TYPE = 34,
 }
+
+impl Default for BpfMapType {
+    fn default() -> Self {
+        BpfMapType::BPF_MAP_TYPE_UNSPEC
+    }
+}
