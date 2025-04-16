@@ -6,6 +6,10 @@ use map::UnifiedMap;
 mod helper;
 mod linux_bpf;
 pub mod map;
+pub mod perf;
+mod preprocessor;
+
+pub use preprocessor::EBPFPreProcessor;
 
 pub type Result<T> = core::result::Result<T, BpfError>;
 
@@ -40,12 +44,15 @@ pub trait KernelAuxiliaryOps {
     fn get_unified_map_from_fd<F, R>(map_fd: u32, func: F) -> Result<R>
     where
         F: FnOnce(&mut UnifiedMap) -> Result<R>;
+    /// Get a unified map pointer from a file descriptor.
+    fn get_unified_map_ptr_from_fd(map_fd: u32) -> Result<*const u8>;
     /// Transmute a pointer to a buffer of bytes into a slice.
     fn transmute_buf<'a>(ptr: *const u8, size: usize) -> Result<&'a [u8]>;
     /// Transmute a mutable pointer to a buffer of bytes into a mutable slice.
     fn transmute_buf_mut<'a>(ptr: *mut u8, size: usize) -> Result<&'a mut [u8]>;
     /// Get the current CPU ID.
     fn current_cpu_id() -> u32;
+    /// Output some data to a perf buf
     fn perf_event_output(
         ctx: *mut core::ffi::c_void,
         fd: u32,

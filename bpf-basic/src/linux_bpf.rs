@@ -44,3 +44,12 @@ impl Default for BpfMapType {
         BpfMapType::BPF_MAP_TYPE_UNSPEC
     }
 }
+
+pub const BPF_PSEUDO_MAP_FD: u32 = 1;
+pub const BPF_PSEUDO_MAP_IDX: u32 = 5;
+pub const BPF_PSEUDO_MAP_VALUE: u32 = 2;
+pub const BPF_PSEUDO_MAP_IDX_VALUE: u32 = 6;
+pub const BPF_PSEUDO_BTF_ID: u32 = 3;
+pub const BPF_PSEUDO_FUNC: u32 = 4;
+pub const BPF_PSEUDO_CALL: u32 = 1;
+pub const BPF_PSEUDO_KFUNC_CALL: u32 = 2;

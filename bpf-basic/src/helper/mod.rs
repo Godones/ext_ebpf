@@ -356,6 +356,10 @@ mod tests {
             Err(BpfError::NotSupported)
         }
 
+        fn get_unified_map_ptr_from_fd(map_fd: u32) -> Result<*const u8> {
+            Err(BpfError::NotSupported)
+        }
+
         fn transmute_buf<'a>(_ptr: *const u8, _size: usize) -> Result<&'a [u8]> {
             Err(BpfError::NotSupported)
         }
