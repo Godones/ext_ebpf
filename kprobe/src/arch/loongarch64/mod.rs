@@ -1,6 +1,8 @@
 use alloc::sync::Arc;
 use core::ops::{Deref, DerefMut};
 
+use lock_api::RawMutex;
+
 use crate::{KprobeBasic, KprobeBuilder, KprobeOps};
 
 const BRK_KPROBE_BP: u64 = 10;
@@ -8,8 +10,8 @@ const BRK_KPROBE_SSTEPBP: u64 = 11;
 const EBREAK_INST: u32 = 0x002a0000;
 
 #[derive(Debug)]
-pub struct Kprobe {
-    basic: KprobeBasic,
+pub struct Kprobe<L: RawMutex + 'static> {
+    basic: KprobeBasic<L>,
     point: Arc<LA64KprobePoint>,
 }
 #[derive(Debug)]
@@ -18,21 +20,21 @@ pub struct LA64KprobePoint {
     inst_tmp: [u8; 8],
 }
 
-impl Deref for Kprobe {
-    type Target = KprobeBasic;
+impl<L: RawMutex + 'static> Deref for Kprobe<L> {
+    type Target = KprobeBasic<L>;
 
     fn deref(&self) -> &Self::Target {
         &self.basic
     }
 }
 
-impl DerefMut for Kprobe {
+impl<L: RawMutex + 'static> DerefMut for Kprobe<L> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.basic
     }
 }
 
-impl Kprobe {
+impl<L: RawMutex + 'static> Kprobe<L> {
     pub fn probe_point(&self) -> &Arc<LA64KprobePoint> {
         &self.point
     }
@@ -55,7 +57,7 @@ impl Drop for LA64KprobePoint {
 }
 
 impl KprobeBuilder {
-    pub fn install(self) -> (Kprobe, Arc<LA64KprobePoint>) {
+    pub fn install<L: RawMutex + 'static>(self) -> (Kprobe<L>, Arc<LA64KprobePoint>) {
         let probe_point = match &self.probe_point {
             Some(point) => point.clone(),
             None => self.replace_inst(),

@@ -2,9 +2,11 @@
 #![feature(c_variadic)]
 #![allow(unused)]
 extern crate alloc;
+use alloc::string::String;
+
 use map::UnifiedMap;
 mod helper;
-mod linux_bpf;
+pub mod linux_bpf;
 pub mod map;
 pub mod perf;
 mod preprocessor;
@@ -59,4 +61,6 @@ pub trait KernelAuxiliaryOps {
         flags: u32,
         data: &[u8],
     ) -> Result<()>;
+    /// Read a string from a user space pointer.
+    fn string_from_user_cstr(ptr: *const u8) -> Result<String>;
 }

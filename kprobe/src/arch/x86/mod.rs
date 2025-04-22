@@ -4,6 +4,7 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
+use lock_api::RawMutex;
 use yaxpeax_arch::LengthedInstruction;
 
 use crate::{KprobeBasic, KprobeBuilder, KprobeOps};
@@ -11,8 +12,8 @@ use crate::{KprobeBasic, KprobeBuilder, KprobeOps};
 const EBREAK_INST: u8 = 0xcc; // x86_64: 0xcc
 const MAX_INSTRUCTION_SIZE: usize = 15; // x86_64 max instruction length
 
-pub struct Kprobe {
-    basic: KprobeBasic,
+pub struct Kprobe<L: RawMutex + 'static> {
+    basic: KprobeBasic<L>,
     point: Arc<X86KprobePoint>,
 }
 
@@ -44,7 +45,7 @@ impl Drop for X86KprobePoint {
     }
 }
 
-impl Debug for Kprobe {
+impl<L: RawMutex + 'static> Debug for Kprobe<L> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Kprobe")
             .field("basic", &self.basic)
@@ -53,22 +54,22 @@ impl Debug for Kprobe {
     }
 }
 
-impl Deref for Kprobe {
-    type Target = KprobeBasic;
+impl<L: RawMutex + 'static> Deref for Kprobe<L> {
+    type Target = KprobeBasic<L>;
 
     fn deref(&self) -> &Self::Target {
         &self.basic
     }
 }
 
-impl DerefMut for Kprobe {
+impl<L: RawMutex + 'static> DerefMut for Kprobe<L> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.basic
     }
 }
 
 impl KprobeBuilder {
-    pub fn install(self) -> (Kprobe, Arc<X86KprobePoint>) {
+    pub(crate) fn install<L: RawMutex + 'static>(self) -> (Kprobe<L>, Arc<X86KprobePoint>) {
         let probe_point = match &self.probe_point {
             Some(point) => point.clone(),
             None => self.replace_inst(),
@@ -113,7 +114,7 @@ impl KprobeBuilder {
     }
 }
 
-impl Kprobe {
+impl<L: RawMutex + 'static> Kprobe<L> {
     pub fn probe_point(&self) -> &Arc<X86KprobePoint> {
         &self.point
     }

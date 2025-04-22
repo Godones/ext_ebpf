@@ -9,3 +9,5 @@ bitflags = "2.9"
 lru = "0.13"
 log = "0.4"
 rbpf = { path = "../rbpf", default-features = false }
+int-enum = "1.2"
+

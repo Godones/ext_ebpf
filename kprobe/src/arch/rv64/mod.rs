@@ -5,6 +5,8 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
+use lock_api::RawMutex;
+
 use crate::{KprobeBasic, KprobeBuilder, KprobeOps};
 const EBREAK_INST: u32 = 0x00100073; // ebreak
 const C_EBREAK_INST: u32 = 0x9002; // c.ebreak
@@ -12,8 +14,8 @@ const INSN_LENGTH_MASK: u16 = 0x3;
 const INSN_LENGTH_32: u16 = 0x3;
 
 #[derive(Debug)]
-pub struct Kprobe {
-    basic: KprobeBasic,
+pub struct Kprobe<L: RawMutex + 'static> {
+    basic: KprobeBasic<L>,
     point: Arc<Rv64KprobePoint>,
 }
 
@@ -29,21 +31,21 @@ pub struct Rv64KprobePoint {
     inst_tmp: [u8; 8],
 }
 
-impl Deref for Kprobe {
-    type Target = KprobeBasic;
+impl<L: RawMutex + 'static> Deref for Kprobe<L> {
+    type Target = KprobeBasic<L>;
 
     fn deref(&self) -> &Self::Target {
         &self.basic
     }
 }
 
-impl DerefMut for Kprobe {
+impl<L: RawMutex + 'static> DerefMut for Kprobe<L> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.basic
     }
 }
 
-impl Kprobe {
+impl<L: RawMutex + 'static> Kprobe<L> {
     pub fn probe_point(&self) -> &Arc<Rv64KprobePoint> {
         &self.point
     }
@@ -72,7 +74,7 @@ impl Drop for Rv64KprobePoint {
 }
 
 impl KprobeBuilder {
-    pub fn install(self) -> (Kprobe, Arc<Rv64KprobePoint>) {
+    pub fn install<L: RawMutex + 'static>(self) -> (Kprobe<L>, Arc<Rv64KprobePoint>) {
         let probe_point = match &self.probe_point {
             Some(point) => point.clone(),
             None => self.replace_inst(),

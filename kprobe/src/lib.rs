@@ -8,6 +8,7 @@ mod manager;
 use alloc::sync::Arc;
 
 pub use arch::*;
+use lock_api::RawMutex;
 pub use manager::*;
 
 /// Register a kprobe.
@@ -20,11 +21,11 @@ pub use manager::*;
 /// # Returns
 /// - An `Arc` containing the registered kprobe.
 ///
-pub fn register_kprobe(
-    manager: &mut KprobeManager,
+pub fn register_kprobe<L: RawMutex + 'static>(
+    manager: &mut KprobeManager<L>,
     kprobe_point_list: &mut KprobePointList,
     kprobe_builder: KprobeBuilder,
-) -> Arc<Kprobe> {
+) -> Arc<Kprobe<L>> {
     let address = kprobe_builder.probe_addr();
     let existed_point = kprobe_point_list.get(&address).map(Clone::clone);
     let kprobe = match existed_point {
@@ -47,10 +48,10 @@ pub fn register_kprobe(
 /// - `kprobe_point_list`: The list of kprobe points.
 /// - `kprobe`: The kprobe to unregister.
 ///
-pub fn unregister_kprobe(
-    manager: &mut KprobeManager,
+pub fn unregister_kprobe<L: RawMutex + 'static>(
+    manager: &mut KprobeManager<L>,
     kprobe_point_list: &mut KprobePointList,
-    kprobe: Arc<Kprobe>,
+    kprobe: Arc<Kprobe<L>>,
 ) {
     let kprobe_addr = kprobe.probe_point().break_address();
     manager.remove_kprobe(&kprobe);

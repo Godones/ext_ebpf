@@ -1,6 +1,8 @@
 use alloc::{boxed::Box, string::String, sync::Arc};
 use core::{any::Any, fmt::Debug};
 
+use lock_api::{Mutex, RawMutex};
+
 #[cfg(target_arch = "loongarch64")]
 mod loongarch64;
 #[cfg(target_arch = "riscv64")]
@@ -129,14 +131,14 @@ impl KprobeBuilder {
     }
 }
 
-pub struct KprobeBasic {
+pub struct KprobeBasic<L: RawMutex + 'static> {
     symbol: Option<String>,
     symbol_addr: usize,
     offset: usize,
     pre_handler: ProbeHandler,
     post_handler: ProbeHandler,
     fault_handler: ProbeHandler,
-    event_callback: Option<Box<dyn CallBackFunc>>,
+    event_callback: Mutex<L, Option<Box<dyn CallBackFunc>>>,
     enable: bool,
 }
 
@@ -144,7 +146,7 @@ pub trait CallBackFunc: Send + Sync {
     fn call(&self, trap_frame: &dyn ProbeArgs);
 }
 
-impl Debug for KprobeBasic {
+impl<L: RawMutex + 'static> Debug for KprobeBasic<L> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Kprobe")
             .field("symbol", &self.symbol)
@@ -154,7 +156,7 @@ impl Debug for KprobeBasic {
     }
 }
 
-impl KprobeBasic {
+impl<L: RawMutex + 'static> KprobeBasic<L> {
     /// Call the pre handler function.
     pub fn call_pre_handler(&self, trap_frame: &dyn ProbeArgs) {
         self.pre_handler.call(trap_frame);
@@ -172,7 +174,8 @@ impl KprobeBasic {
 
     /// Call the event callback function.
     pub fn call_event_callback(&self, trap_frame: &dyn ProbeArgs) {
-        if let Some(ref call_back) = self.event_callback {
+        let guard = self.event_callback.lock();
+        if let Some(ref call_back) = *guard {
             call_back.call(trap_frame);
         }
     }
@@ -181,7 +184,7 @@ impl KprobeBasic {
     ///
     /// Likely to post_handler.
     pub fn update_event_callback(&mut self, callback: Box<dyn CallBackFunc>) {
-        self.event_callback = Some(callback);
+        self.event_callback.lock().replace(callback);
     }
 
     /// Disable the probe point.
@@ -205,7 +208,7 @@ impl KprobeBasic {
     }
 }
 
-impl From<KprobeBuilder> for KprobeBasic {
+impl<L: RawMutex + 'static> From<KprobeBuilder> for KprobeBasic<L> {
     fn from(value: KprobeBuilder) -> Self {
         let fault_handler = value.fault_handler.unwrap_or(ProbeHandler::new(|_| {}));
         KprobeBasic {
@@ -214,7 +217,7 @@ impl From<KprobeBuilder> for KprobeBasic {
             offset: value.offset,
             pre_handler: value.pre_handler,
             post_handler: value.post_handler,
-            event_callback: value.event_callback,
+            event_callback: Mutex::new(value.event_callback),
             fault_handler,
             enable: value.enable,
         }

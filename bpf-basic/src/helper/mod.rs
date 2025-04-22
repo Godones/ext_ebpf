@@ -380,6 +380,10 @@ mod tests {
         ) -> Result<()> {
             Err(BpfError::NotSupported)
         }
+
+        fn string_from_user_cstr(ptr: *const u8) -> Result<alloc::string::String> {
+            Err(BpfError::NotSupported)
+        }
     }
 
     #[test]
