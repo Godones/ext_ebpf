@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 use core::{
+    alloc::Layout,
     arch::riscv64::sfence_vma_all,
     fmt::Debug,
     ops::{Deref, DerefMut},
@@ -7,16 +8,17 @@ use core::{
 
 use lock_api::RawMutex;
 
-use crate::{KprobeBasic, KprobeBuilder, KprobeOps};
+use super::KprobeAuxiliaryOps;
+use crate::{KprobeBasic, KprobeBuilder, KprobeOps, ProbeArgs};
 const EBREAK_INST: u32 = 0x00100073; // ebreak
 const C_EBREAK_INST: u32 = 0x9002; // c.ebreak
 const INSN_LENGTH_MASK: u16 = 0x3;
 const INSN_LENGTH_32: u16 = 0x3;
 
 #[derive(Debug)]
-pub struct Kprobe<L: RawMutex + 'static> {
+pub struct Kprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
     basic: KprobeBasic<L>,
-    point: Arc<Rv64KprobePoint>,
+    point: Arc<Rv64KprobePoint<F>>,
 }
 
 #[derive(Debug)]
@@ -25,13 +27,14 @@ enum OpcodeTy {
     Inst32(u32),
 }
 #[derive(Debug)]
-pub struct Rv64KprobePoint {
+pub struct Rv64KprobePoint<F: KprobeAuxiliaryOps> {
     addr: usize,
     old_instruction: OpcodeTy,
-    inst_tmp: [u8; 8],
+    inst_tmp_ptr: usize,
+    _marker: core::marker::PhantomData<F>,
 }
 
-impl<L: RawMutex + 'static> Deref for Kprobe<L> {
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Deref for Kprobe<L, F> {
     type Target = KprobeBasic<L>;
 
     fn deref(&self) -> &Self::Target {
@@ -39,29 +42,37 @@ impl<L: RawMutex + 'static> Deref for Kprobe<L> {
     }
 }
 
-impl<L: RawMutex + 'static> DerefMut for Kprobe<L> {
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> DerefMut for Kprobe<L, F> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.basic
     }
 }
 
-impl<L: RawMutex + 'static> Kprobe<L> {
-    pub fn probe_point(&self) -> &Arc<Rv64KprobePoint> {
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Kprobe<L, F> {
+    pub fn probe_point(&self) -> &Arc<Rv64KprobePoint<F>> {
         &self.point
     }
 }
 
-impl Drop for Rv64KprobePoint {
+impl<F: KprobeAuxiliaryOps> Drop for Rv64KprobePoint<F> {
     fn drop(&mut self) {
         let address = self.addr;
         match self.old_instruction {
             OpcodeTy::Inst16(inst_16) => unsafe {
+                F::set_writeable_for_address(address, 2, true);
                 core::ptr::write(address as *mut u16, inst_16);
+                F::set_writeable_for_address(address, 2, false);
             },
             OpcodeTy::Inst32(inst_32) => unsafe {
+                F::set_writeable_for_address(address, 4, true);
                 core::ptr::write(address as *mut u32, inst_32);
+                F::set_writeable_for_address(address, 4, false);
             },
         }
+        F::dealloc_executable_memory(
+            self.inst_tmp_ptr as *mut u8,
+            Layout::from_size_align(8, 8).unwrap(),
+        );
         unsafe {
             sfence_vma_all();
         }
@@ -73,8 +84,8 @@ impl Drop for Rv64KprobePoint {
     }
 }
 
-impl KprobeBuilder {
-    pub fn install<L: RawMutex + 'static>(self) -> (Kprobe<L>, Arc<Rv64KprobePoint>) {
+impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
+    pub fn install<L: RawMutex + 'static>(self) -> (Kprobe<L, F>, Arc<Rv64KprobePoint<F>>) {
         let probe_point = match &self.probe_point {
             Some(point) => point.clone(),
             None => self.replace_inst(),
@@ -87,7 +98,7 @@ impl KprobeBuilder {
     }
 
     /// Replace the instruction at the specified address with a breakpoint instruction.
-    fn replace_inst(&self) -> Arc<Rv64KprobePoint> {
+    fn replace_inst(&self) -> Arc<Rv64KprobePoint<F>> {
         let address = self.symbol_addr + self.offset;
         let inst_16 = unsafe { core::ptr::read(address as *const u16) };
         // See <https://elixir.bootlin.com/linux/v6.10.2/source/arch/riscv/kernel/probes/kprobes.c#L68>
@@ -96,16 +107,22 @@ impl KprobeBuilder {
         } else {
             true
         };
+
+        let inst_tmp_ptr =
+            F::alloc_executable_memory(Layout::from_size_align(8, 8).unwrap()) as usize;
         let mut point = Rv64KprobePoint {
             old_instruction: OpcodeTy::Inst16(0),
-            inst_tmp: [0; 8],
+            inst_tmp_ptr,
             addr: address,
+            _marker: core::marker::PhantomData,
         };
-        let inst_tmp_ptr = point.inst_tmp.as_ptr() as usize;
+
         if is_inst_16 {
             point.old_instruction = OpcodeTy::Inst16(inst_16);
             unsafe {
+                F::set_writeable_for_address(address, 2, true);
                 core::ptr::write(address as *mut u16, C_EBREAK_INST as u16);
+                F::set_writeable_for_address(address, 2, false);
                 // inst_16 :0-16
                 // c.ebreak:16-32
                 core::ptr::write(inst_tmp_ptr as *mut u16, inst_16);
@@ -115,7 +132,9 @@ impl KprobeBuilder {
             let inst_32 = unsafe { core::ptr::read(address as *const u32) };
             point.old_instruction = OpcodeTy::Inst32(inst_32);
             unsafe {
+                F::set_writeable_for_address(address, 4, true);
                 core::ptr::write(address as *mut u32, EBREAK_INST);
+                F::set_writeable_for_address(address, 4, false);
                 // inst_32 :0-32
                 // ebreak  :32-64
                 core::ptr::write(inst_tmp_ptr as *mut u32, inst_32);
@@ -135,7 +154,7 @@ impl KprobeBuilder {
     }
 }
 
-impl KprobeOps for Rv64KprobePoint {
+impl<F: KprobeAuxiliaryOps> KprobeOps for Rv64KprobePoint<F> {
     fn return_address(&self) -> usize {
         let address = self.addr;
         match self.old_instruction {
@@ -144,15 +163,29 @@ impl KprobeOps for Rv64KprobePoint {
         }
     }
     fn single_step_address(&self) -> usize {
-        self.inst_tmp.as_ptr() as usize
+        self.inst_tmp_ptr
     }
     fn debug_address(&self) -> usize {
         match self.old_instruction {
-            OpcodeTy::Inst16(_) => self.inst_tmp.as_ptr() as usize + 2,
-            OpcodeTy::Inst32(_) => self.inst_tmp.as_ptr() as usize + 4,
+            OpcodeTy::Inst16(_) => self.inst_tmp_ptr + 2,
+            OpcodeTy::Inst32(_) => self.inst_tmp_ptr + 4,
         }
     }
     fn break_address(&self) -> usize {
         self.addr
     }
+}
+
+/// Set up a single step for the given address.
+///
+/// This function updates the program counter (PC) to the specified address.
+pub(crate) fn setup_single_step(frame: &mut dyn ProbeArgs, single_step_address: usize) {
+    frame.update_pc(single_step_address);
+}
+
+/// Clear the single step for the given address.
+///
+/// This function updates the program counter (PC) to the specified address.
+pub(crate) fn clear_single_step(frame: &mut dyn ProbeArgs, single_step_address: usize) {
+    frame.update_pc(single_step_address);
 }

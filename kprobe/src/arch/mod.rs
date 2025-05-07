@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, string::String, sync::Arc};
-use core::{any::Any, fmt::Debug};
+use core::{alloc::Layout, any::Any, fmt::Debug};
 
 use lock_api::{Mutex, RawMutex};
 
@@ -18,15 +18,17 @@ pub use rv64::*;
 pub use x86::*;
 
 #[cfg(target_arch = "x86_64")]
-pub type KprobePoint = X86KprobePoint;
+pub type KprobePoint<F> = X86KprobePoint<F>;
 #[cfg(target_arch = "riscv64")]
-pub type KprobePoint = Rv64KprobePoint;
+pub type KprobePoint<F> = Rv64KprobePoint<F>;
 #[cfg(target_arch = "loongarch64")]
-pub type KprobePoint = LA64KprobePoint;
+pub type KprobePoint<F> = LA64KprobePoint<F>;
 
 pub trait ProbeArgs: Send {
     /// User can down cast to get the real type
     fn as_any(&self) -> &dyn Any;
+    /// User can down cast to get the real type
+    fn as_any_mut(&mut self) -> &mut dyn Any;
     /// Return the address of the instruction that caused the break exception
     fn break_address(&self) -> usize;
     /// Return the address of the instruction that caused the single step exception
@@ -34,6 +36,10 @@ pub trait ProbeArgs: Send {
     /// For x86_64, it is the address of the instruction that caused the single step exception
     /// For other architectures, it is the address of the instruction that caused the break exception
     fn debug_address(&self) -> usize;
+    fn update_pc(&mut self, pc: usize);
+    #[cfg(target_arch = "x86_64")]
+    /// Enable or disable single step execution. It's only used for x86_64 architecture.
+    fn set_single_step(&mut self, enable: bool);
 }
 
 pub trait KprobeOps: Send {
@@ -58,6 +64,15 @@ pub trait KprobeOps: Send {
     fn break_address(&self) -> usize;
 }
 
+pub trait KprobeAuxiliaryOps: Send + Debug {
+    /// Enable or disable write permission for the specified address.
+    fn set_writeable_for_address(address: usize, len: usize, writable: bool);
+    /// Allocate executable memory
+    fn alloc_executable_memory(layout: Layout) -> *mut u8;
+    /// Deallocate executable memory
+    fn dealloc_executable_memory(ptr: *mut u8, layout: Layout);
+}
+
 struct ProbeHandler {
     func: fn(&dyn ProbeArgs),
 }
@@ -72,7 +87,7 @@ impl ProbeHandler {
     }
 }
 
-pub struct KprobeBuilder {
+pub struct KprobeBuilder<F: KprobeAuxiliaryOps> {
     symbol: Option<String>,
     symbol_addr: usize,
     offset: usize,
@@ -80,15 +95,16 @@ pub struct KprobeBuilder {
     post_handler: ProbeHandler,
     fault_handler: Option<ProbeHandler>,
     event_callback: Option<Box<dyn CallBackFunc>>,
-    probe_point: Option<Arc<KprobePoint>>,
+    probe_point: Option<Arc<KprobePoint<F>>>,
     enable: bool,
+    _marker: core::marker::PhantomData<F>,
 }
 
 pub trait EventCallback: Send {
     fn call(&self, trap_frame: &dyn ProbeArgs);
 }
 
-impl KprobeBuilder {
+impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
     pub fn new(
         symbol: Option<String>,
         symbol_addr: usize,
@@ -107,6 +123,7 @@ impl KprobeBuilder {
             fault_handler: None,
             probe_point: None,
             enable,
+            _marker: core::marker::PhantomData,
         }
     }
 
@@ -115,7 +132,7 @@ impl KprobeBuilder {
         self
     }
 
-    pub fn with_probe_point(mut self, point: Arc<KprobePoint>) -> Self {
+    pub fn with_probe_point(mut self, point: Arc<KprobePoint<F>>) -> Self {
         self.probe_point = Some(point);
         self
     }
@@ -208,8 +225,8 @@ impl<L: RawMutex + 'static> KprobeBasic<L> {
     }
 }
 
-impl<L: RawMutex + 'static> From<KprobeBuilder> for KprobeBasic<L> {
-    fn from(value: KprobeBuilder) -> Self {
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> From<KprobeBuilder<F>> for KprobeBasic<L> {
+    fn from(value: KprobeBuilder<F>) -> Self {
         let fault_handler = value.fault_handler.unwrap_or(ProbeHandler::new(|_| {}));
         KprobeBasic {
             symbol: value.symbol,

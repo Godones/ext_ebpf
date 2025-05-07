@@ -2,16 +2,16 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use lock_api::RawMutex;
 
-use crate::{Kprobe, KprobeOps, KprobePoint};
+use crate::{Kprobe, KprobeAuxiliaryOps, KprobeOps, KprobePoint};
 
 /// A manager for kprobes.
 #[derive(Debug)]
-pub struct KprobeManager<L: RawMutex + 'static> {
-    break_list: BTreeMap<usize, Vec<Arc<Kprobe<L>>>>,
-    debug_list: BTreeMap<usize, Vec<Arc<Kprobe<L>>>>,
+pub struct KprobeManager<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
+    break_list: BTreeMap<usize, Vec<Arc<Kprobe<L, F>>>>,
+    debug_list: BTreeMap<usize, Vec<Arc<Kprobe<L, F>>>>,
 }
 
-impl<L: RawMutex + 'static> KprobeManager<L> {
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> KprobeManager<L, F> {
     pub const fn new() -> Self {
         KprobeManager {
             break_list: BTreeMap::new(),
@@ -19,7 +19,7 @@ impl<L: RawMutex + 'static> KprobeManager<L> {
         }
     }
     /// Insert a kprobe into the manager.
-    pub fn insert_kprobe(&mut self, kprobe: Arc<Kprobe<L>>) {
+    pub fn insert_kprobe(&mut self, kprobe: Arc<Kprobe<L, F>>) {
         let probe_point = kprobe.probe_point().clone();
         self.insert_break_point(probe_point.break_address(), kprobe.clone());
         self.insert_debug_point(probe_point.debug_address(), kprobe);
@@ -30,7 +30,7 @@ impl<L: RawMutex + 'static> KprobeManager<L> {
     /// # Parameters
     /// - `address`: The address of the kprobe, obtained from `KprobePoint::break_address()` or `KprobeBuilder::probe_addr()`.
     /// - `kprobe`: The instance of the kprobe.
-    fn insert_break_point(&mut self, address: usize, kprobe: Arc<Kprobe<L>>) {
+    fn insert_break_point(&mut self, address: usize, kprobe: Arc<Kprobe<L, F>>) {
         let list = self.break_list.entry(address).or_default();
         list.push(kprobe);
     }
@@ -41,18 +41,18 @@ impl<L: RawMutex + 'static> KprobeManager<L> {
     /// - `address`: The address of the kprobe, obtained from `KprobePoint::debug_address()`.
     /// - `kprobe`: The instance of the kprobe.
     ///
-    fn insert_debug_point(&mut self, address: usize, kprobe: Arc<Kprobe<L>>) {
+    fn insert_debug_point(&mut self, address: usize, kprobe: Arc<Kprobe<L, F>>) {
         let list = self.debug_list.entry(address).or_default();
         list.push(kprobe);
     }
 
     /// Get the list of kprobes registered at a breakpoint address.
-    pub fn get_break_list(&self, address: usize) -> Option<&Vec<Arc<Kprobe<L>>>> {
+    pub fn get_break_list(&self, address: usize) -> Option<&Vec<Arc<Kprobe<L, F>>>> {
         self.break_list.get(&address)
     }
 
     /// Get the list of kprobes registered at a debug address.
-    pub fn get_debug_list(&self, address: usize) -> Option<&Vec<Arc<Kprobe<L>>>> {
+    pub fn get_debug_list(&self, address: usize) -> Option<&Vec<Arc<Kprobe<L, F>>>> {
         self.debug_list.get(&address)
     }
 
@@ -77,14 +77,14 @@ impl<L: RawMutex + 'static> KprobeManager<L> {
     }
 
     /// Remove a kprobe from the manager.
-    pub fn remove_kprobe(&mut self, kprobe: &Arc<Kprobe<L>>) {
+    pub fn remove_kprobe(&mut self, kprobe: &Arc<Kprobe<L, F>>) {
         let probe_point = kprobe.probe_point().clone();
         self.remove_one_break(probe_point.break_address(), kprobe);
         self.remove_one_debug(probe_point.debug_address(), kprobe);
     }
 
     /// Remove a kprobe from the break_list.
-    fn remove_one_break(&mut self, address: usize, kprobe: &Arc<Kprobe<L>>) {
+    fn remove_one_break(&mut self, address: usize, kprobe: &Arc<Kprobe<L, F>>) {
         if let Some(list) = self.break_list.get_mut(&address) {
             list.retain(|x| !Arc::ptr_eq(x, kprobe));
         }
@@ -94,7 +94,7 @@ impl<L: RawMutex + 'static> KprobeManager<L> {
     }
 
     /// Remove a kprobe from the debug_list.
-    fn remove_one_debug(&mut self, address: usize, kprobe: &Arc<Kprobe<L>>) {
+    fn remove_one_debug(&mut self, address: usize, kprobe: &Arc<Kprobe<L, F>>) {
         if let Some(list) = self.debug_list.get_mut(&address) {
             list.retain(|x| !Arc::ptr_eq(x, kprobe));
         }
@@ -105,4 +105,4 @@ impl<L: RawMutex + 'static> KprobeManager<L> {
 }
 
 /// A list of kprobe points.
-pub type KprobePointList = BTreeMap<usize, Arc<KprobePoint>>;
+pub type KprobePointList<F> = BTreeMap<usize, Arc<KprobePoint<F>>>;
