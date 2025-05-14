@@ -40,9 +40,11 @@ impl EBPFPreProcessor {
                             })? as usize;
                         let offset = next_insn.imm as usize;
                         log::info!(
-                            "Relocate for BPF_PSEUDO_MAP_VALUE, instruction index: {}, map_fd: {}",
+                            "Relocate for BPF_PSEUDO_MAP_VALUE, instruction index: {}, map_fd: {}, ptr: {:#x}, offset: {}",
                             index,
-                            map_fd
+                            map_fd,
+                            first_value_ptr,
+                            offset
                         );
                         Some(first_value_ptr + offset)
                     }

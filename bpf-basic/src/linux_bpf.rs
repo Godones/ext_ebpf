@@ -9,7 +9,7 @@
 
 use int_enum::IntEnum;
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, IntEnum)]
 pub enum BpfMapType {
     BPF_MAP_TYPE_UNSPEC = 0,
     BPF_MAP_TYPE_HASH = 1,
@@ -297,7 +297,7 @@ impl bpf_cmd {
     pub const BPF_PROG_RUN: bpf_cmd = bpf_cmd::BPF_PROG_TEST_RUN;
 }
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, IntEnum)]
 pub enum bpf_cmd {
     BPF_MAP_CREATE = 0,
     BPF_MAP_LOOKUP_ELEM = 1,
@@ -347,7 +347,7 @@ impl bpf_map_type {
         bpf_map_type::BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE_DEPRECATED;
 }
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, IntEnum)]
 pub enum bpf_map_type {
     BPF_MAP_TYPE_UNSPEC = 0,
     BPF_MAP_TYPE_HASH = 1,
@@ -386,7 +386,7 @@ pub enum bpf_map_type {
     __MAX_BPF_MAP_TYPE = 34,
 }
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, IntEnum)]
 pub enum bpf_prog_type {
     BPF_PROG_TYPE_UNSPEC = 0,
     BPF_PROG_TYPE_SOCKET_FILTER = 1,
@@ -424,7 +424,7 @@ pub enum bpf_prog_type {
     __MAX_BPF_PROG_TYPE = 33,
 }
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, IntEnum)]
 pub enum bpf_attach_type {
     BPF_CGROUP_INET_INGRESS = 0,
     BPF_CGROUP_INET_EGRESS = 1,

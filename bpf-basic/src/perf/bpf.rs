@@ -1,3 +1,5 @@
+use core::any::Any;
+
 use super::{
     util::{PerfProbeArgs, *},
     PerfEventOps,
@@ -221,6 +223,15 @@ impl PerfEventOps for BpfPerfEvent {
     }
     fn readable(&self) -> bool {
         self.data.mmap_page.readable()
+    }
+    fn writeable(&self) -> bool {
+        false
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

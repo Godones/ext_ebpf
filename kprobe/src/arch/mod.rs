@@ -1,8 +1,12 @@
 use alloc::{boxed::Box, string::String, sync::Arc};
-use core::{alloc::Layout, any::Any, fmt::Debug};
+use core::{
+    alloc::Layout,
+    any::Any,
+    fmt::Debug,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use lock_api::{Mutex, RawMutex};
-
 #[cfg(target_arch = "loongarch64")]
 mod loongarch64;
 #[cfg(target_arch = "riscv64")]
@@ -132,7 +136,7 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
         self
     }
 
-    pub fn with_probe_point(mut self, point: Arc<KprobePoint<F>>) -> Self {
+    pub(crate) fn with_probe_point(mut self, point: Arc<KprobePoint<F>>) -> Self {
         self.probe_point = Some(point);
         self
     }
@@ -156,7 +160,7 @@ pub struct KprobeBasic<L: RawMutex + 'static> {
     post_handler: ProbeHandler,
     fault_handler: ProbeHandler,
     event_callback: Mutex<L, Option<Box<dyn CallBackFunc>>>,
-    enable: bool,
+    enable: AtomicBool,
 }
 
 pub trait CallBackFunc: Send + Sync {
@@ -200,23 +204,23 @@ impl<L: RawMutex + 'static> KprobeBasic<L> {
     /// Set the event callback function.
     ///
     /// Likely to post_handler.
-    pub fn update_event_callback(&mut self, callback: Box<dyn CallBackFunc>) {
+    pub fn update_event_callback(&self, callback: Box<dyn CallBackFunc>) {
         self.event_callback.lock().replace(callback);
     }
 
     /// Disable the probe point.
-    pub fn disable(&mut self) {
-        self.enable = false;
+    pub fn disable(&self) {
+        self.enable.store(false, Ordering::Relaxed);
     }
 
     /// Enable the probe point.
-    pub fn enable(&mut self) {
-        self.enable = true;
+    pub fn enable(&self) {
+        self.enable.store(true, Ordering::Relaxed);
     }
 
     /// Check if the probe point is enabled.
     pub fn is_enabled(&self) -> bool {
-        self.enable
+        self.enable.load(Ordering::Relaxed)
     }
 
     /// Get the function name of the probe point.
@@ -236,7 +240,7 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> From<KprobeBuilder<F>> for Kp
             post_handler: value.post_handler,
             event_callback: Mutex::new(value.event_callback),
             fault_handler,
-            enable: value.enable,
+            enable: AtomicBool::new(value.enable),
         }
     }
 }

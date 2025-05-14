@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::string::String;
 
 use map::UnifiedMap;
-mod helper;
+pub mod helper;
 pub mod linux_bpf;
 pub mod map;
 pub mod perf;
@@ -49,9 +49,9 @@ pub trait KernelAuxiliaryOps {
     /// Get a unified map pointer from a file descriptor.
     fn get_unified_map_ptr_from_fd(map_fd: u32) -> Result<*const u8>;
     /// Transmute a pointer to a buffer of bytes into a slice.
-    fn transmute_buf<'a>(ptr: *const u8, size: usize) -> Result<&'a [u8]>;
+    fn transmute_buf(ptr: *const u8, size: usize) -> Result<&'static [u8]>;
     /// Transmute a mutable pointer to a buffer of bytes into a mutable slice.
-    fn transmute_buf_mut<'a>(ptr: *mut u8, size: usize) -> Result<&'a mut [u8]>;
+    fn transmute_buf_mut(ptr: *mut u8, size: usize) -> Result<&'static mut [u8]>;
     /// Get the current CPU ID.
     fn current_cpu_id() -> u32;
     /// Output some data to a perf buf
@@ -63,4 +63,8 @@ pub trait KernelAuxiliaryOps {
     ) -> Result<()>;
     /// Read a string from a user space pointer.
     fn string_from_user_cstr(ptr: *const u8) -> Result<String>;
+    /// For ebpf print helper functions
+    fn ebpf_write_str(str: &str) -> Result<()>;
+    // For ebpf ktime helper functions
+    fn ebpf_time_ns() -> Result<u64>;
 }

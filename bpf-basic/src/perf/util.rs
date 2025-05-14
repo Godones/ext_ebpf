@@ -63,8 +63,7 @@ impl PerfProbeArgs {
         } else {
             String::new()
         };
-        let sample_ty = perf_event_sample_format::try_from(attr.sample_type as u32)
-            .map_err(|_| BpfError::InvalidArgument)?;
+        let sample_ty = perf_event_sample_format::try_from(attr.sample_type as u32).ok();
         let args = PerfProbeArgs {
             config,
             name,
@@ -75,7 +74,7 @@ impl PerfProbeArgs {
             cpu,
             group_fd,
             flags: PerfEventOpenFlags::from_bits_truncate(flags),
-            sample_type: Some(sample_ty),
+            sample_type: sample_ty,
         };
         Ok(args)
     }

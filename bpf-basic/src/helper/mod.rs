@@ -1,4 +1,8 @@
-use core::ffi::c_void;
+use alloc::collections::btree_map::BTreeMap;
+use core::{
+    ffi::{c_char, c_int, c_void},
+    fmt::Write,
+};
 
 use consts::BPF_F_CURRENT_CPU;
 
@@ -8,7 +12,6 @@ use crate::{
 };
 
 pub mod consts;
-mod print;
 
 pub type RawBPFHelperFn = fn(u64, u64, u64, u64, u64) -> u64;
 
@@ -19,6 +22,47 @@ macro_rules! helper_func {
             core::mem::transmute::<usize, RawBPFHelperFn>($name::<$($generic),*> as usize)
         }
     };
+    ($name:ident) => {
+        unsafe {
+            core::mem::transmute::<usize, RawBPFHelperFn>($name as usize)
+        }
+    };
+}
+
+use printf_compat::{format, output};
+
+/// Printf according to the format string, function will return the number of bytes written(including '\0')
+pub unsafe extern "C" fn printf(w: &mut impl Write, str: *const c_char, mut args: ...) -> c_int {
+    let bytes_written = format(str as _, args.as_va_list(), output::fmt_write(w));
+    bytes_written + 1
+}
+
+/// See <https://ebpf-docs.dylanreimerink.nl/linux/helper-function/bpf_trace_printk/>
+pub fn trace_printf<F: KernelAuxiliaryOps>(
+    fmt_ptr: u64,
+    _fmt_len: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
+) -> u64 {
+    struct FakeWriter<F: KernelAuxiliaryOps> {
+        _phantom: core::marker::PhantomData<F>,
+    }
+    impl<F: KernelAuxiliaryOps> FakeWriter<F> {
+        fn default() -> Self {
+            FakeWriter {
+                _phantom: core::marker::PhantomData,
+            }
+        }
+    }
+    impl<F: KernelAuxiliaryOps> Write for FakeWriter<F> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            F::ebpf_write_str(s).map_err(|_| core::fmt::Error)?;
+            Ok(())
+        }
+    }
+    let mut fmt = FakeWriter::<F>::default();
+    unsafe { printf(&mut fmt, fmt_ptr as _, arg3, arg4, arg5) as u64 }
 }
 
 /// See <https://ebpf-docs.dylanreimerink.nl/linux/helper-function/bpf_map_lookup_elem/>
@@ -336,6 +380,61 @@ pub fn map_peek_elem(unified_map: &mut UnifiedMap, value: &mut [u8]) -> Result<(
     value
 }
 
+pub fn bpf_ktime_get_ns<F: KernelAuxiliaryOps>() -> u64 {
+    let time = F::ebpf_time_ns();
+    match time {
+        Ok(t) => t,
+        Err(_) => 0,
+    }
+}
+
+/// Initialize the helper functions map.
+pub fn init_helper_functions<F: KernelAuxiliaryOps>() -> BTreeMap<u32, RawBPFHelperFn> {
+    use consts::*;
+    let mut map = BTreeMap::new();
+    unsafe {
+        // Map helpers::Generic map helpers
+        map.insert(
+            HELPER_MAP_LOOKUP_ELEM,
+            helper_func!(raw_map_lookup_elem::<F>),
+        );
+        map.insert(
+            HELPER_MAP_UPDATE_ELEM,
+            helper_func!(raw_map_update_elem::<F>),
+        );
+        map.insert(
+            HELPER_MAP_DELETE_ELEM,
+            helper_func!(raw_map_delete_elem::<F>),
+        );
+        map.insert(HELPER_KTIME_GET_NS, helper_func!(bpf_ktime_get_ns::<F>));
+        map.insert(
+            HELPER_MAP_FOR_EACH_ELEM,
+            helper_func!(raw_map_for_each_elem::<F>),
+        );
+        map.insert(
+            HELPER_MAP_LOOKUP_PERCPU_ELEM,
+            helper_func!(raw_map_lookup_percpu_elem::<F>),
+        );
+        // map.insert(93,define_func!(raw_bpf_spin_lock);
+        // map.insert(94,define_func!(raw_bpf_spin_unlock);
+        // Map helpers::Perf event array helpers
+        map.insert(
+            HELPER_PERF_EVENT_OUTPUT,
+            helper_func!(raw_perf_event_output::<F>),
+        );
+        // Probe and trace helpers::Memory helpers
+        map.insert(HELPER_BPF_PROBE_READ, helper_func!(raw_bpf_probe_read));
+        // Print helpers
+        map.insert(HELPER_TRACE_PRINTF, helper_func!(trace_printf::<F>));
+
+        // Map helpers::Queue and stack helpers
+        map.insert(HELPER_MAP_PUSH_ELEM, helper_func!(raw_map_push_elem::<F>));
+        map.insert(HELPER_MAP_POP_ELEM, helper_func!(raw_map_pop_elem::<F>));
+        map.insert(HELPER_MAP_PEEK_ELEM, helper_func!(raw_map_peek_elem::<F>));
+    }
+    map
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,11 +459,11 @@ mod tests {
             Err(BpfError::NotSupported)
         }
 
-        fn transmute_buf<'a>(_ptr: *const u8, _size: usize) -> Result<&'a [u8]> {
+        fn transmute_buf(_ptr: *const u8, _size: usize) -> Result<&'static [u8]> {
             Err(BpfError::NotSupported)
         }
 
-        fn transmute_buf_mut<'a>(_ptr: *mut u8, _size: usize) -> Result<&'a mut [u8]> {
+        fn transmute_buf_mut(_ptr: *mut u8, _size: usize) -> Result<&'static mut [u8]> {
             Err(BpfError::NotSupported)
         }
 
@@ -383,6 +482,16 @@ mod tests {
 
         fn string_from_user_cstr(ptr: *const u8) -> Result<alloc::string::String> {
             Err(BpfError::NotSupported)
+        }
+
+        fn ebpf_write_str(str: &str) -> Result<()> {
+            // This is a fake implementation for testing purposes
+            Ok(())
+        }
+
+        fn ebpf_time_ns() -> Result<u64> {
+            // This is a fake implementation for testing purposes
+            Ok(0)
         }
     }
 
