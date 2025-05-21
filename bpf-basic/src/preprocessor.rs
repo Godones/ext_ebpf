@@ -34,19 +34,18 @@ impl EBPFPreProcessor {
                     BPF_PSEUDO_MAP_VALUE => {
                         // dst = map_val(map_by_fd(imm)) + next_imm
                         // map_val(map) gets the address of the first value in a given map
-                        let first_value_ptr =
-                            F::get_unified_map_from_fd(map_fd as u32, |unified_map| {
-                                unified_map.map().first_value_ptr()
-                            })? as usize;
+                        let value_ptr = F::get_unified_map_from_fd(map_fd as u32, |unified_map| {
+                            unified_map.map().map_values_ptr_range()
+                        })?;
                         let offset = next_insn.imm as usize;
                         log::info!(
                             "Relocate for BPF_PSEUDO_MAP_VALUE, instruction index: {}, map_fd: {}, ptr: {:#x}, offset: {}",
                             index,
                             map_fd,
-                            first_value_ptr,
+                            value_ptr.start,
                             offset
                         );
-                        Some(first_value_ptr + offset)
+                        Some(value_ptr.start + offset)
                     }
                     BPF_PSEUDO_MAP_FD => {
                         // dst = map_by_fd(imm)

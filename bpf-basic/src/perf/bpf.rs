@@ -1,9 +1,6 @@
 use core::any::Any;
 
-use super::{
-    util::{PerfProbeArgs, *},
-    PerfEventOps,
-};
+use super::util::{PerfProbeArgs, *};
 use crate::{linux_bpf::*, BpfError, Result};
 
 const PAGE_SIZE: usize = 4096;
@@ -24,6 +21,10 @@ impl RingPage {
             data_region_size: 0,
             lost: 0,
         }
+    }
+
+    pub fn start(&self) -> usize {
+        self.ptr
     }
 
     pub fn new_init(start: usize, len: usize) -> Self {
@@ -212,29 +213,6 @@ pub struct BpfPerfEventData {
     offset: usize,
 }
 
-impl PerfEventOps for BpfPerfEvent {
-    fn enable(&mut self) -> Result<()> {
-        self.data.enabled = true;
-        Ok(())
-    }
-    fn disable(&mut self) -> Result<()> {
-        self.data.enabled = false;
-        Ok(())
-    }
-    fn readable(&self) -> bool {
-        self.data.mmap_page.readable()
-    }
-    fn writeable(&self) -> bool {
-        false
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
-
 impl BpfPerfEvent {
     pub fn new(args: PerfProbeArgs) -> Self {
         BpfPerfEvent {
@@ -246,6 +224,8 @@ impl BpfPerfEvent {
             },
         }
     }
+
+    /// Bind the perf event to a mmap page.
     pub fn do_mmap(&mut self, start: usize, len: usize, offset: usize) -> Result<()> {
         // create mmap page
         let mmap_page = RingPage::new_init(start, len);
@@ -254,11 +234,30 @@ impl BpfPerfEvent {
         Ok(())
     }
 
+    /// Write a perf event to the mmap page.
     pub fn write_event(&mut self, data: &[u8]) -> Result<()> {
         self.data.mmap_page.write_event(data)
     }
-}
 
-pub fn perf_event_open_bpf(args: PerfProbeArgs) -> BpfPerfEvent {
-    BpfPerfEvent::new(args)
+    /// Enable the perf event
+    pub fn enable(&mut self) -> Result<()> {
+        self.data.enabled = true;
+        Ok(())
+    }
+
+    /// Disable the perf event
+    pub fn disable(&mut self) -> Result<()> {
+        self.data.enabled = false;
+        Ok(())
+    }
+
+    /// Whether the perf event is readable
+    pub fn readable(&self) -> bool {
+        self.data.mmap_page.readable()
+    }
+
+    /// Whether the perf event is writable
+    pub fn writeable(&self) -> bool {
+        false
+    }
 }

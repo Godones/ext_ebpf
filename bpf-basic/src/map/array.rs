@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, vec, vec::Vec};
-use core::ops::{Index, IndexMut};
+use core::ops::{Index, IndexMut, Range};
 
 use super::{
     round_up, BpfCallBackFn, BpfMapCommonOps, BpfMapMeta, PerCpuVariants, PerCpuVariantsOps,
@@ -134,8 +134,9 @@ impl BpfMapCommonOps for ArrayMap {
     fn freeze(&self) -> Result<()> {
         Ok(())
     }
-    fn first_value_ptr(&self) -> Result<*const u8> {
-        Ok(self.data.data.as_ptr())
+    fn map_values_ptr_range(&self) -> Result<Range<usize>> {
+        let start = self.data.data.as_ptr() as usize;
+        Ok(start..start + self.data.data.len())
     }
 }
 
@@ -182,8 +183,8 @@ impl<T: PerCpuVariantsOps> BpfMapCommonOps for PerCpuArrayMap<T> {
     fn get_next_key(&self, key: Option<&[u8]>, next_key: &mut [u8]) -> Result<()> {
         self.per_cpu_data.get_mut().get_next_key(key, next_key)
     }
-    fn first_value_ptr(&self) -> Result<*const u8> {
-        self.per_cpu_data.get_mut().first_value_ptr()
+    fn map_values_ptr_range(&self) -> Result<Range<usize>> {
+        self.per_cpu_data.get_mut().map_values_ptr_range()
     }
 }
 
@@ -242,7 +243,8 @@ impl BpfMapCommonOps for PerfEventArrayMap {
     fn lookup_and_delete_elem(&mut self, _key: &[u8], _value: &mut [u8]) -> Result<()> {
         Err(BpfError::NotSupported)
     }
-    fn first_value_ptr(&self) -> Result<*const u8> {
-        Ok(self.fds.data.as_ptr())
+    fn map_values_ptr_range(&self) -> Result<Range<usize>> {
+        let start = self.fds.data.as_ptr() as usize;
+        Ok(start..start + self.fds.data.len())
     }
 }

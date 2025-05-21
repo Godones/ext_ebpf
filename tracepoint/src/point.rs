@@ -79,7 +79,7 @@ impl TracePoint {
     }
 
     /// Get the callback list
-    pub fn callback_list(&mut self) -> impl Iterator<Item = &TracePointFunc> {
+    pub fn callback_list(&self) -> impl Iterator<Item = &TracePointFunc> {
         self.callback.values()
     }
 

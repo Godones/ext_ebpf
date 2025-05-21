@@ -2,10 +2,16 @@ mod array;
 mod hash;
 mod lru;
 mod queue;
-use alloc::{boxed::Box, string::String};
-use core::fmt::Debug;
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+};
+use core::{ffi::CStr, fmt::Debug, ops::Range};
 
-use crate::{linux_bpf::BpfMapType, BpfError, KernelAuxiliaryOps, Result};
+use crate::{
+    linux_bpf::{bpf_attr, BpfMapType},
+    BpfError, KernelAuxiliaryOps, Result,
+};
 
 #[inline]
 /// Round up `x` to the nearest multiple of `align`.
@@ -80,7 +86,9 @@ pub trait BpfMapCommonOps: Send + Sync + Debug {
     }
 
     /// Get the first value pointer.
-    fn first_value_ptr(&self) -> Result<*const u8> {
+    ///
+    /// This is used for BPF_PSEUDO_MAP_VALUE.
+    fn map_values_ptr_range(&self) -> Result<Range<usize>> {
         Err(BpfError::NotSupported)
     }
 }
@@ -134,6 +142,30 @@ pub struct BpfMapMeta {
     pub max_entries: u32,
     pub _map_flags: u32,
     pub _map_name: String,
+}
+
+impl TryFrom<&bpf_attr> for BpfMapMeta {
+    type Error = BpfError;
+    fn try_from(attr: &bpf_attr) -> Result<Self> {
+        let u = unsafe { &attr.__bindgen_anon_1 };
+        let map_name_slice = unsafe {
+            core::slice::from_raw_parts(u.map_name.as_ptr() as *const u8, u.map_name.len())
+        };
+        let map_name = CStr::from_bytes_until_nul(map_name_slice)
+            .map_err(|_| BpfError::InvalidArgument)?
+            .to_str()
+            .map_err(|_| BpfError::InvalidArgument)?
+            .to_string();
+        let map_type = BpfMapType::try_from(u.map_type).map_err(|_| BpfError::InvalidArgument)?;
+        Ok(BpfMapMeta {
+            map_type,
+            key_size: u.key_size,
+            value_size: u.value_size,
+            max_entries: u.max_entries,
+            _map_flags: u.map_flags,
+            _map_name: map_name,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -232,11 +264,42 @@ pub struct BpfMapUpdateArg {
     pub flags: u64,
 }
 
+impl TryFrom<&bpf_attr> for BpfMapUpdateArg {
+    type Error = BpfError;
+    fn try_from(attr: &bpf_attr) -> Result<Self> {
+        let u = unsafe { &attr.__bindgen_anon_2 };
+        let map_fd = u.map_fd;
+        let key = u.key;
+        let value = unsafe { u.__bindgen_anon_1.value };
+        let flags = u.flags;
+        Ok(BpfMapUpdateArg {
+            map_fd,
+            key,
+            value,
+            flags,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct BpfMapGetNextKeyArg {
     pub map_fd: u32,
     pub key: Option<u64>,
     pub next_key: u64,
+}
+
+impl TryFrom<&bpf_attr> for BpfMapGetNextKeyArg {
+    type Error = BpfError;
+    fn try_from(attr: &bpf_attr) -> Result<Self> {
+        unsafe {
+            let u = &attr.__bindgen_anon_2;
+            Ok(BpfMapGetNextKeyArg {
+                map_fd: u.map_fd,
+                key: if u.key != 0 { Some(u.key) } else { None },
+                next_key: u.__bindgen_anon_1.next_key,
+            })
+        }
+    }
 }
 
 /// Create or update an element (key/value pair) in a specified map.

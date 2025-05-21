@@ -10,6 +10,7 @@ pub mod linux_bpf;
 pub mod map;
 pub mod perf;
 mod preprocessor;
+pub mod prog;
 
 pub use preprocessor::EBPFPreProcessor;
 

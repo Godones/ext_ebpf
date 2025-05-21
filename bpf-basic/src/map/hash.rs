@@ -139,7 +139,4 @@ impl<T: PerCpuVariantsOps> BpfMapCommonOps for PerCpuHashMap<T> {
     fn get_next_key(&self, key: Option<&[u8]>, next_key: &mut [u8]) -> Result<()> {
         self.per_cpu_maps.get_mut().get_next_key(key, next_key)
     }
-    fn first_value_ptr(&self) -> Result<*const u8> {
-        self.per_cpu_maps.get_mut().first_value_ptr()
-    }
 }

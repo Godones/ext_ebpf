@@ -1,0 +1,15 @@
+[package]
+name = "ksym"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustc-demangle = { version = "0.1", optional = true }
+
+
+[features]
+demangle = ["dep:rustc-demangle"]
+
+[[bin]]
+name = "gen_ksym"
+required-features = ["demangle"]

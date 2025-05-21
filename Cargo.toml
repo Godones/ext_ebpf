@@ -6,6 +6,7 @@ members = [
     "tracepoint",
     "rbpf",
     "simple-ebpf",
+    "ksym",
     # "polyhal/example",
 ]
 exclude = ["polyhal"]
