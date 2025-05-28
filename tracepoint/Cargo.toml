@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 static-keys = "0.7.0"
+# static-keys = { path = "../../static-keys" }
 paste = "1.0"
 log = "0.4"
 lock_api = "0.4"

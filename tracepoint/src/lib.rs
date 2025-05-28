@@ -15,6 +15,7 @@ use alloc::{
 };
 
 use lock_api::{Mutex, RawMutex};
+pub use paste::paste;
 pub use point::{CommonTracePointMeta, TracePoint};
 pub use trace_pipe::TracePipe;
 
