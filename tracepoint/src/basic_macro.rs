@@ -1,74 +1,181 @@
-/// Define a tracepoint
+/// Define a tracepoint with the given parameters.
 ///
-/// User should call register_trace_\$name to register a callback function to the tracepoint and
-/// call trace_\$name to trigger the callback function
+/// This macro generates a tracepoint with the specified name, arguments, entry structure, assignment logic, identifier, and print format.
+/// # Parameters
+/// - `name`: The name of the tracepoint.
+/// - `TP_lock`: The lock type to use for the tracepoint.
+/// - `TP_kops`: The kernel trace operations type. `[crate::KernelTraceOps]` is expected to be implemented for this type.
+/// - `TP_system`: The subsystem or system to which the tracepoint belongs.
+/// - `TP_PROTO`: The prototype of the tracepoint function.
+/// - `TP_STRUCT__entry`: The structure of the tracepoint entry.
+/// - `TP_fast_assign`: The assignment logic for the tracepoint entry.
+/// - `TP_ident`: The identifier for the tracepoint entry.
+/// - `TP_printk`: The print format for the tracepoint.
+///
+/// # Example
+/// ```rust
+/// use lock_api::Mutex;
+/// use crate::KernelTraceOps;
+/// define_event_trace!(
+///     Mutex<()>,
+///     Kops,
+///     TEST2,
+///     TP_PROTO(a: u32, b: u32),
+///     TP_STRUCT__entry{
+///           a: u32,
+///           b: u32,
+///     },
+///     TP_fast_assign{
+///           a:a,
+///           b:{
+///             // do something with b
+///             b
+///           }
+///     },
+///     TP_ident(__entry),
+///     TP_printk({
+///           // do something with __entry
+///           format!("Hello from tracepoint! a={}, b={}", __entry.a, __entry.b)
+///     })
+/// );
+/// ```
 #[macro_export]
-macro_rules! define_trace_point {
-    ($lock:ident,$name:ident $(,$arg:ident:$arg_type:ty)*) => {
-        paste!{
+macro_rules! define_event_trace{
+    (
+        $name:ident,
+        TP_lock($lock:ty),
+        TP_kops($kops:ident),
+        TP_system($system:ident),
+        TP_PROTO($($arg:ident:$arg_type:ty),*),
+        TP_STRUCT__entry{$($entry:ident:$entry_type:ty,)*},
+        TP_fast_assign{$($assign:ident:$value:expr,)*},
+        TP_ident($tp_ident:ident),
+        TP_printk($fmt_expr: expr)
+    ) => {
+        $crate::paste!{
             static_keys::define_static_key_false!([<__ $name _KEY>]);
             #[allow(non_upper_case_globals)]
             #[used]
-            static [<__ $name>]: $lock<$crate::TracePoint> = $lock::new($crate::TracePoint::new(&[<__ $name _KEY>],stringify!($name), module_path!(),None,None));
+            static [<__ $name>]: $crate::TracePoint<$lock> = $crate::TracePoint::new(&[<__ $name _KEY>],stringify!($name), stringify!($system),[<trace_fmt_ $name>], [<trace_fmt_show $name>]);
 
             #[inline(always)]
             #[allow(non_snake_case)]
             pub fn [<trace_ $name>]( $($arg:$arg_type),* ){
-
                 if static_keys::static_branch_unlikely!([<__ $name _KEY>]){
-                    let mut lock = [<__ $name>].lock();
-                    let mut funcs = lock.callback_list();
-                    for trace_func in funcs{
+                    let mut f = |trace_func: &$crate::TracePointFunc |{
                         let func = trace_func.func;
                         let data = trace_func.data.as_ref();
                         let func = unsafe{core::mem::transmute::<fn(),fn(& (dyn core::any::Any+Send+Sync), $($arg_type),*)>(func)};
                         func(data $(,$arg)*);
-                    }
+                    };
+                    let trace_point = &[<__ $name>];
+                    trace_point.callback_list(&mut f);
                 }
             }
             #[allow(non_snake_case)]
             pub fn [<register_trace_ $name>](func: fn(& (dyn core::any::Any+Send+Sync), $($arg_type),*), data: alloc::boxed::Box<dyn core::any::Any+Send+Sync>){
                 let func = unsafe{core::mem::transmute::<fn(& (dyn core::any::Any+Send+Sync), $($arg_type),*), fn()>(func)};
-                [<__ $name>].lock().register(func,data);
+                [<__ $name>].register(func,data);
             }
             #[allow(non_snake_case)]
             pub fn [<unregister_trace_ $name>](func: fn(& (dyn core::any::Any+Send+Sync), $($arg_type),*)){
                 let func = unsafe{core::mem::transmute::<fn(& (dyn core::any::Any+Send+Sync), $($arg_type),*), fn()>(func)};
-                [<__ $name>].lock().unregister(func);
+                [<__ $name>].unregister(func);
             }
 
-        }
-    };
-}
 
-#[macro_export]
-macro_rules! define_event_trace{
-    ($lock:ident,$kops:ident, $name:ident,
-        ($($arg:ident:$arg_type:ty),*),
-        $fmt:expr) =>{
-        define_trace_point!($lock,$name $(,$arg:$arg_type)*);
-        paste!{
             #[derive(Debug)]
             #[repr(C)]
             #[allow(non_snake_case,non_camel_case_types)]
             struct [<__ $name _TracePointMeta>]{
-                trace_point: &'static $lock<$crate::TracePoint>,
+                trace_point: &'static $crate::TracePoint<$lock>,
                 print_func: fn(&mut (dyn core::any::Any+Send+Sync), $($arg_type),*),
             }
+
             #[allow(non_upper_case_globals)]
             #[link_section = ".tracepoint"]
             #[used]
             static [<__ $name _meta>]: [<__ $name _TracePointMeta>] = [<__ $name _TracePointMeta>]{
                 trace_point:& [<__ $name>],
-                print_func:[<trace_print_ $name>]::<$kops>,
+                print_func:[<trace_default_ $name>]::<$kops>,
             };
+
             #[allow(non_snake_case)]
-            pub fn [<trace_print_ $name>]<F:$crate::KernelTraceOps>(_data:&mut (dyn core::any::Any+Send+Sync), $($arg:$arg_type),* ){
-                let time = F::time_now();
-                let cpu_id = F::cpu_id();
-                let current_pid = F::current_pid();
-                let format = format!("[{}][{}][{}] {}\n",time,cpu_id,current_pid,$fmt);
-                F::trace_pipe_push_record(format);
+            pub fn [<trace_default_ $name>]<F:$crate::KernelTraceOps>(_data:&mut (dyn core::any::Any+Send+Sync), $($arg:$arg_type),* ){
+                #[repr(C)]
+                struct Entry {
+                    $($entry: $entry_type,)*
+                }
+                #[repr(C)]
+                struct FullEntry {
+                    common: $crate::TraceEntry,
+                    entry: Entry,
+                }
+
+                let entry = Entry {
+                    $($assign: $value,)*
+                };
+
+                let pid = F::current_pid();
+                let common = $crate::TraceEntry {
+                    type_: [<__ $name>].id() as _,
+                    flags: [<__ $name>].flags(),
+                    preempt_count: 0,
+                    pid: pid as i32,
+                };
+
+                let full_entry = FullEntry {
+                    common,
+                    entry,
+                };
+
+                F::trace_cmdline_push(pid);
+
+                let event_buf = unsafe {
+                    core::slice::from_raw_parts(
+                        &full_entry as *const FullEntry as *const u8,
+                        core::mem::size_of::<FullEntry>(),
+                    )
+                };
+                F::trace_pipe_push_raw_record(event_buf);
+            }
+
+            #[allow(non_snake_case)]
+            pub fn [<trace_fmt_ $name>](buf_ptr: *const u8) -> alloc::string::String {
+                #[repr(C)]
+                struct Entry {
+                    $($entry: $entry_type,)*
+                }
+                let $tp_ident = unsafe {
+                    &*(buf_ptr as *const Entry)
+                };
+                let fmt = format!("{}", $fmt_expr);
+                fmt
+            }
+
+            #[allow(non_snake_case)]
+            pub fn [<trace_fmt_show $name>]()-> alloc::string::String {
+                let mut fmt = format!("format:
+\tfield: u16 common_type; offset: 0; size: 2; signed: 0;
+\tfield: u8 common_flags; offset: 2; size: 1; signed: 0;
+\tfield: u8 common_preempt_count; offset: 3; size: 1; signed: 0;
+\tfield: i32 common_pid; offset: 4; size: 4; signed: 1;
+
+");
+                fn is_signed<T>() -> bool {
+                    match core::any::type_name::<T>() {
+                        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => true,
+                        _ => false,
+                    }
+                }
+                let mut offset = 8;
+                $(
+                    fmt.push_str(&format!("\tfield: {} {} offset: {}; size: {}; signed: {};\n",
+                        stringify!($entry_type), stringify!($entry), offset, core::mem::size_of::<$entry_type>(), if is_signed::<$entry_type>() { 1 } else { 0 }));
+                    offset += core::mem::size_of::<$entry_type>();
+                )*
+                fmt.push_str(&format!("\nprint fmt: \"{}\"", stringify!($fmt_expr)));
+                fmt
             }
         }
     };

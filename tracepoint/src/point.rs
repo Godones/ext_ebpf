@@ -1,21 +1,61 @@
-use alloc::{boxed::Box, collections::BTreeMap};
-use core::any::Any;
+use alloc::{boxed::Box, collections::BTreeMap, format, string::String};
+use core::{any::Any, sync::atomic::AtomicU32};
 
 use lock_api::{Mutex, RawMutex};
 use static_keys::StaticFalseKey;
-pub struct TracePoint {
+
+#[derive(Debug)]
+#[repr(C)]
+pub struct TraceEntry {
+    pub type_: u16,
+    pub flags: u8,
+    pub preempt_count: u8,
+    pub pid: i32,
+}
+
+impl TraceEntry {
+    pub fn trace_print_lat_fmt(&self) -> String {
+        // todo!("Implement IRQs off logic");
+        let irqs_off = '.';
+        let resched = '.';
+        let hardsoft_irq = '.';
+        let mut preempt_low = '.';
+        if self.preempt_count & 0xf != 0 {
+            preempt_low = ((b'0') + (self.preempt_count & 0xf)) as char;
+        }
+        let mut preempt_high = '.';
+        if self.preempt_count >> 4 != 0 {
+            preempt_high = ((b'0') + (self.preempt_count >> 4)) as char;
+        }
+        format!(
+            "{}{}{}{}{}",
+            irqs_off, resched, hardsoft_irq, preempt_low, preempt_high
+        )
+    }
+}
+
+pub struct TracePoint<L: RawMutex + 'static> {
     name: &'static str,
-    module_path: &'static str,
+    system: &'static str,
     key: &'static StaticFalseKey,
-    register: Option<fn()>,
-    unregister: Option<fn()>,
+    id: AtomicU32,
+    inner: Mutex<L, TracePointInner>,
+    trace_entry_fmt_func: fn(*const u8) -> String,
+    trace_print_func: fn() -> String,
+    flags: u8,
+}
+
+struct TracePointInner {
     callback: BTreeMap<usize, TracePointFunc>,
 }
 
-impl core::fmt::Debug for TracePoint {
+impl<L: RawMutex + 'static> core::fmt::Debug for TracePoint<L> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TracePoint")
             .field("name", &self.name)
+            .field("system", &self.system)
+            .field("id", &self.id())
+            .field("flags", &self.flags)
             .finish()
     }
 }
@@ -23,7 +63,7 @@ impl core::fmt::Debug for TracePoint {
 #[derive(Debug)]
 #[repr(C)]
 pub struct CommonTracePointMeta<L: RawMutex + 'static> {
-    pub trace_point: &'static Mutex<L, TracePoint>,
+    pub trace_point: &'static TracePoint<L>,
     pub print_func: fn(),
 }
 
@@ -33,54 +73,90 @@ pub struct TracePointFunc {
     pub data: Box<dyn Any + Send + Sync>,
 }
 
-impl TracePoint {
+impl<L: RawMutex + 'static> TracePoint<L> {
     pub const fn new(
         key: &'static StaticFalseKey,
         name: &'static str,
-        module_path: &'static str,
-        register: Option<fn()>,
-        unregister: Option<fn()>,
+        system: &'static str,
+        fmt_func: fn(*const u8) -> String,
+        trace_print_func: fn() -> String,
     ) -> Self {
         Self {
             name,
-            module_path,
+            system,
             key,
-            register,
-            unregister,
-            callback: BTreeMap::new(),
+            id: AtomicU32::new(0),
+            flags: 0,
+            trace_entry_fmt_func: fmt_func,
+            trace_print_func,
+            inner: Mutex::new(TracePointInner {
+                callback: BTreeMap::new(),
+            }),
         }
     }
 
+    /// Returns the name of the tracepoint.
     pub fn name(&self) -> &'static str {
         self.name
     }
 
-    pub fn module_path(&self) -> &'static str {
-        self.module_path
+    /// Returns the system of the tracepoint.
+    pub fn system(&self) -> &'static str {
+        self.system
+    }
+
+    /// Sets the ID of the tracepoint.
+    pub(crate) fn set_id(&self, id: u32) {
+        self.id.store(id, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the ID of the tracepoint.
+    pub fn id(&self) -> u32 {
+        self.id.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Returns the flags of the tracepoint.
+    pub fn flags(&self) -> u8 {
+        self.flags
+    }
+
+    /// Returns the format function for the tracepoint.
+    pub(crate) fn fmt_func(&self) -> fn(*const u8) -> String {
+        self.trace_entry_fmt_func
+    }
+
+    /// Returns a string representation of the format function for the tracepoint.
+    ///
+    /// You can use `cat /sys/kernel/debug/tracing/events/syscalls/sys_enter_openat/format` in linux
+    /// to see the format of the tracepoint.
+    pub fn print_fmt(&self) -> String {
+        let post_str = (self.trace_print_func)();
+        format!("name: {}\nID: {}\n{}\n", self.name(), self.id(), post_str)
     }
 
     /// Register a callback function to the tracepoint
-    pub fn register(&mut self, func: fn(), data: Box<dyn Any + Sync + Send>) {
+    pub fn register(&self, func: fn(), data: Box<dyn Any + Sync + Send>) {
         let trace_point_func = TracePointFunc { func, data };
-        if let Some(register) = self.register {
-            register();
-        }
         let ptr = func as usize;
-        self.callback.entry(ptr).or_insert(trace_point_func);
+        self.inner
+            .lock()
+            .callback
+            .entry(ptr)
+            .or_insert(trace_point_func);
     }
 
     /// Unregister a callback function from the tracepoint
-    pub fn unregister(&mut self, func: fn()) {
-        if let Some(unregister) = self.unregister {
-            unregister();
-        }
+    pub fn unregister(&self, func: fn()) {
         let func_ptr = func as usize;
-        self.callback.remove(&func_ptr);
+        self.inner.lock().callback.remove(&func_ptr);
     }
 
-    /// Get the callback list
-    pub fn callback_list(&self) -> impl Iterator<Item = &TracePointFunc> {
-        self.callback.values()
+    /// Iterate over all registered callback functions
+    pub fn callback_list(&self, f: &dyn Fn(&TracePointFunc)) {
+        let inner = self.inner.lock();
+        for trace_func in inner.callback.values() {
+            f(trace_func);
+        }
     }
 
     /// Enable the tracepoint

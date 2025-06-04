@@ -20,42 +20,91 @@ A Rust crate for implementing tracepoints in kernel. This crate provides a flexi
 
 ```rust
 use spin::Mutex;
-use tracepoint::{define_event_trace, define_trace_point, KernelTraceOps};
-
+use tracepoint::{define_event_trace, KernelTraceOps};
 // Define kernel operations
-struct Kops;
+pub static TRACE_RAW_PIPE: Mutex<tracepoint::TracePipeRaw> =
+    Mutex::new(tracepoint::TracePipeRaw::new(1024));
+
+pub struct Kops;
+
 impl KernelTraceOps for Kops {
-    fn cpu_id() -> u32 { 
-        // Get current CPU ID from kernel
-        unsafe { smp_processor_id() }
+    fn cpu_id() -> u32 {
+        0
     }
-    fn current_pid() -> u32 { 
-        // Get current process ID from kernel
-        current.pid
+
+    fn current_pid() -> u32 {
+        1
     }
-    fn time_now() -> u64 { 
-        // Get current kernel time
-        ktime_get_ns()
+
+    fn time_now() -> u64 {
+        time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64
     }
-    fn trace_pipe_push_record(format: String) {
-        // Push record to kernel trace pipe
-        trace_printk(format.as_ptr())
+
+    fn trace_pipe_push_raw_record(buf: &[u8]) {
+        let mut pipe = TRACE_RAW_PIPE.lock();
+        pipe.push_event(buf.to_vec());
     }
 }
 
-// Define a tracepoint
+// Define tracepoint
 define_event_trace!(
-    Mutex,
+    Mutex<()>,
     Kops,
     TEST,
-    (a: u32, b: u32),
-    format_args!("Kernel tracepoint: a={}, b={}", a, b)
+    TP_PROTO(a: u32, b: &TestS),
+    TP_STRUCT__entry{
+        a: u32,
+        b: u32,
+    },
+    TP_fast_assign{
+        a: a,
+        b: *b.b.deref().deref(),
+    },
+    TP_ident(__entry),
+    // Custom tracepoint print format
+    TP_printk{
+        let arg1 = __entry.a;
+        let arg2 = __entry.b;
+        format!("Hello from tracepoint! a={:?}, b={}", arg1, arg2)
+    }
 );
 
+define_event_trace!(
+    Mutex<()>,
+    Kops,
+    TEST2,
+    TP_PROTO(a: u32, b: u32),
+    TP_STRUCT__entry{
+        a: u32,
+        b: u32,
+    },
+    TP_fast_assign{
+        a:a,
+        b:b,
+    },
+    TP_ident(__entry),
+    // Custom tracepoint print format
+    TP_printk{
+        format_args!("Hello from tracepoint! a={}, b={}", __entry.a, __entry.b)
+    }
+);
 // Use the tracepoint in kernel code
-trace_TEST(1, 2);
+ pub fn test_trace(a: u32, b: u32) {
+    let x = TestS {
+        a,
+        b: Box::new(Arc::new(b)),
+    };
+    // first tracepoint
+    trace_TEST(a, &x);
+    // second tracepoint
+    trace_TEST2(a, b);
+    println!("Tracepoint TEST called with a={}, b={}", a, b);
+}
 ```
-
+See example in `examples/usage.rs` for a complete example.
 ### Managing Tracepoints
 
 ```rust
@@ -64,9 +113,17 @@ let manager = global_init_events::<Mutex<()>>().unwrap();
 
 // Enable/disable tracepoints
 let subsystem = manager.get_subsystem("my_subsystem").unwrap();
-let trace_point = subsystem.get_event("my_event").unwrap();
-trace_point.enable_file().write(true); // Enable
-trace_point.enable_file().write(false); // Disable
+let tracepoint_info = subsystem.get_event("my_event").unwrap();
+tracepoint_info.enable_file().write(true); // Enable
+tracepoint_info.enable_file().write(false); // Disable
+
+
+// other operations
+let tracepoint_map = manager.tracepoint_map();
+// Iterate over all tracepoints
+for (name, tracepoint) in tracepoint_map.iter() {
+    println!("Tracepoint: {}, Enabled: {}", name, tracepoint.is_enabled());
+}
 ```
 
 ## Architecture
