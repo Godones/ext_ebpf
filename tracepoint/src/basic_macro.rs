@@ -102,11 +102,11 @@ macro_rules! define_event_trace{
 
             #[allow(non_snake_case)]
             pub fn [<trace_default_ $name>]<F:$crate::KernelTraceOps>(_data:&mut (dyn core::any::Any+Send+Sync), $($arg:$arg_type),* ){
-                #[repr(C, packed)]
+                #[repr(C)]
                 struct Entry {
                     $($entry: $entry_type,)*
                 }
-                #[repr(C, packed)]
+                #[repr(C)]
                 struct FullEntry {
                     common: $crate::TraceEntry,
                     entry: Entry,
@@ -175,11 +175,22 @@ macro_rules! define_event_trace{
                         _ => false,
                     }
                 }
-                let mut offset = 8;
+
+
+                #[repr(C)]
+                struct Entry {
+                    $($entry: $entry_type,)*
+                }
+                #[repr(C)]
+                struct FullEntry {
+                    common: $crate::TraceEntry,
+                    entry: Entry,
+                }
+
                 $(
+                    let mut offset = core::mem::offset_of!(FullEntry, entry.$entry);
                     fmt.push_str(&format!("\tfield: {} {} offset: {}; size: {}; signed: {};\n",
                         stringify!($entry_type), stringify!($entry), offset, core::mem::size_of::<$entry_type>(), if is_signed::<$entry_type>() { 1 } else { 0 }));
-                    offset += core::mem::size_of::<$entry_type>();
                 )*
                 fmt.push_str(&format!("\nprint fmt: \"{}\"", stringify!($fmt_expr)));
                 fmt

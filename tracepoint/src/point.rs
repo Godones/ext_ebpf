@@ -5,7 +5,7 @@ use lock_api::{Mutex, RawMutex};
 use static_keys::StaticFalseKey;
 
 #[derive(Debug)]
-#[repr(C, packed)]
+#[repr(C)]
 pub struct TraceEntry {
     pub type_: u16,
     pub flags: u8,

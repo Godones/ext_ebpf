@@ -1,4 +1,5 @@
 #![feature(asm_goto)]
+
 use spin::Mutex;
 use tracepoint::{
     global_init_events, TraceCmdLineCache, TraceEntryParser, TracePipeOps, TracePointMap,
@@ -59,10 +60,12 @@ mod tracepoint_test {
         TP_PROTO(a: u32, b: &TestS),
         TP_STRUCT__entry{
             a: u32,
+            pad:[u8;5],
             b: u32,
         },
         TP_fast_assign{
             a: a,
+            pad: [0; 5],
             b: *b.b.deref().deref(),
         },
         TP_ident(__entry),
