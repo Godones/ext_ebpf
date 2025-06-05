@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, string::String, sync::Arc};
+use alloc::{boxed::Box, collections::btree_map::BTreeMap, string::String, sync::Arc};
 use core::{
     alloc::Layout,
     any::Any,
@@ -98,7 +98,7 @@ pub struct KprobeBuilder<F: KprobeAuxiliaryOps> {
     pre_handler: ProbeHandler,
     post_handler: ProbeHandler,
     fault_handler: Option<ProbeHandler>,
-    event_callback: Option<Box<dyn CallBackFunc>>,
+    event_callbacks: BTreeMap<u32, Box<dyn CallBackFunc>>,
     probe_point: Option<Arc<KprobePoint<F>>>,
     enable: bool,
     _marker: core::marker::PhantomData<F>,
@@ -123,7 +123,7 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
             offset,
             pre_handler: ProbeHandler::new(pre_handler),
             post_handler: ProbeHandler::new(post_handler),
-            event_callback: None,
+            event_callbacks: BTreeMap::new(),
             fault_handler: None,
             probe_point: None,
             enable,
@@ -131,6 +131,7 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
         }
     }
 
+    /// Build the kprobe with a pre handler function.
     pub fn with_fault_handler(mut self, func: fn(&dyn ProbeArgs)) -> Self {
         self.fault_handler = Some(ProbeHandler::new(func));
         self
@@ -141,8 +142,13 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
         self
     }
 
-    pub fn with_event_callback(mut self, event_callback: Box<dyn CallBackFunc>) -> Self {
-        self.event_callback = Some(event_callback);
+    /// Build the kprobe with an event callback function.
+    pub fn with_event_callback(
+        mut self,
+        callback_id: u32,
+        event_callback: Box<dyn CallBackFunc>,
+    ) -> Self {
+        self.event_callbacks.insert(callback_id, event_callback);
         self
     }
 
@@ -159,7 +165,7 @@ pub struct KprobeBasic<L: RawMutex + 'static> {
     pre_handler: ProbeHandler,
     post_handler: ProbeHandler,
     fault_handler: ProbeHandler,
-    event_callback: Mutex<L, Option<Box<dyn CallBackFunc>>>,
+    event_callbacks: Mutex<L, BTreeMap<u32, Box<dyn CallBackFunc>>>,
     enable: AtomicBool,
 }
 
@@ -195,17 +201,20 @@ impl<L: RawMutex + 'static> KprobeBasic<L> {
 
     /// Call the event callback function.
     pub fn call_event_callback(&self, trap_frame: &dyn ProbeArgs) {
-        let guard = self.event_callback.lock();
-        if let Some(ref call_back) = *guard {
-            call_back.call(trap_frame);
+        let event_callbacks = self.event_callbacks.lock();
+        for callback in event_callbacks.values() {
+            callback.call(trap_frame);
         }
     }
 
-    /// Set the event callback function.
-    ///
-    /// Likely to post_handler.
-    pub fn update_event_callback(&self, callback: Box<dyn CallBackFunc>) {
-        self.event_callback.lock().replace(callback);
+    /// Register the event callback function.
+    pub fn register_event_callback(&self, callback_id: u32, callback: Box<dyn CallBackFunc>) {
+        self.event_callbacks.lock().insert(callback_id, callback);
+    }
+
+    /// Unregister the event callback function.
+    pub fn unregister_event_callback(&self, callback_id: u32) {
+        self.event_callbacks.lock().remove(&callback_id);
     }
 
     /// Disable the probe point.
@@ -238,7 +247,7 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> From<KprobeBuilder<F>> for Kp
             offset: value.offset,
             pre_handler: value.pre_handler,
             post_handler: value.post_handler,
-            event_callback: Mutex::new(value.event_callback),
+            event_callbacks: Mutex::new(value.event_callbacks),
             fault_handler,
             enable: AtomicBool::new(value.enable),
         }

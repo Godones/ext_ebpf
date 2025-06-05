@@ -46,9 +46,9 @@ macro_rules! define_event_trace{
         TP_lock($lock:ty),
         TP_kops($kops:ident),
         TP_system($system:ident),
-        TP_PROTO($($arg:ident:$arg_type:ty),*),
-        TP_STRUCT__entry{$($entry:ident:$entry_type:ty,)*},
-        TP_fast_assign{$($assign:ident:$value:expr,)*},
+        TP_PROTO($($arg:ident:$arg_type:ty),+ $(,)?),
+        TP_STRUCT__entry{$($entry:ident:$entry_type:ty),+ $(,)?},
+        TP_fast_assign{$($assign:ident:$value:expr),+ $(,)?},
         TP_ident($tp_ident:ident),
         TP_printk($fmt_expr: expr)
     ) => {

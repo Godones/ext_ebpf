@@ -1,5 +1,6 @@
 use alloc::{string::ToString, sync::Arc};
 use core::{
+    alloc::Layout,
     fmt::Debug,
     ops::{Deref, DerefMut},
 };
@@ -21,7 +22,7 @@ pub struct Kprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
 #[derive(Debug)]
 pub struct X86KprobePoint<F: KprobeAuxiliaryOps> {
     addr: usize,
-    old_instruction: [u8; MAX_INSTRUCTION_SIZE],
+    old_instruction_ptr: usize,
     old_instruction_len: usize,
     _marker: core::marker::PhantomData<F>,
 }
@@ -30,15 +31,28 @@ impl<F: KprobeAuxiliaryOps> Drop for X86KprobePoint<F> {
     fn drop(&mut self) {
         let address = self.addr;
         unsafe {
+            F::set_writeable_for_address(address, self.old_instruction_len, true);
             core::ptr::copy(
-                self.old_instruction.as_ptr(),
+                self.old_instruction_ptr as *const u8,
                 address as *mut u8,
                 self.old_instruction_len,
             );
+            F::set_writeable_for_address(address, self.old_instruction_len, false);
             core::arch::x86_64::_mm_mfence();
         }
         let decoder = yaxpeax_x86::amd64::InstDecoder::default();
-        let inst = decoder.decode_slice(&self.old_instruction).unwrap();
+        let buf = unsafe {
+            core::slice::from_raw_parts(
+                self.old_instruction_ptr as *const u8,
+                self.old_instruction_len,
+            )
+        };
+        let inst = decoder.decode_slice(buf).unwrap();
+
+        F::dealloc_executable_memory(
+            self.old_instruction_ptr as *mut u8,
+            Layout::from_size_align(MAX_INSTRUCTION_SIZE + 1, 16).unwrap(),
+        );
         log::trace!(
             "Kprobe::uninstall: address: {:#x}, old_instruction: {:?}",
             address,
@@ -86,29 +100,33 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
     /// Replace the instruction at the specified address with a breakpoint instruction.
     fn replace_inst(&self) -> Arc<X86KprobePoint<F>> {
         let address = self.symbol_addr + self.offset;
-        let mut inst_tmp = [0u8; MAX_INSTRUCTION_SIZE];
+        let inst_tmp = F::alloc_executable_memory(
+            Layout::from_size_align(MAX_INSTRUCTION_SIZE + 1, 16).unwrap(),
+        );
         unsafe {
-            core::ptr::copy(
-                address as *const u8,
-                inst_tmp.as_mut_ptr(),
-                MAX_INSTRUCTION_SIZE,
-            );
+            core::ptr::copy(address as *const u8, inst_tmp, MAX_INSTRUCTION_SIZE);
         }
+
         let decoder = yaxpeax_x86::amd64::InstDecoder::default();
-        let inst = decoder.decode_slice(&inst_tmp).unwrap();
+        let buf = unsafe { core::slice::from_raw_parts(inst_tmp, MAX_INSTRUCTION_SIZE) };
+        let inst = decoder.decode_slice(&buf).unwrap();
         let len = inst.len().to_const();
         log::trace!("inst: {:?}, len: {:?}", inst.to_string(), len);
+
         let point = Arc::new(X86KprobePoint {
             addr: address,
-            old_instruction: inst_tmp,
+            old_instruction_ptr: inst_tmp as usize,
             old_instruction_len: len as usize,
             _marker: core::marker::PhantomData,
         });
 
         unsafe {
+            F::set_writeable_for_address(address, len as usize, true);
             core::ptr::write_volatile(address as *mut u8, EBREAK_INST);
+            F::set_writeable_for_address(address, len as usize, false);
             core::arch::x86_64::_mm_mfence();
         }
+
         log::trace!(
             "Kprobe::install: address: {:#x}, func_name: {:?}",
             address,
@@ -129,10 +147,10 @@ impl<F: KprobeAuxiliaryOps> KprobeOps for X86KprobePoint<F> {
         self.addr + self.old_instruction_len
     }
     fn single_step_address(&self) -> usize {
-        self.old_instruction.as_ptr() as usize
+        self.old_instruction_ptr
     }
     fn debug_address(&self) -> usize {
-        self.old_instruction.as_ptr() as usize + self.old_instruction_len
+        self.old_instruction_ptr + self.old_instruction_len
     }
     fn break_address(&self) -> usize {
         self.addr
