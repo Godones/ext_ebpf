@@ -1,8 +1,7 @@
 #![feature(asm_goto)]
 use spin::Mutex;
 use tracepoint::{
-    global_init_events, TraceCmdLineCache, TraceEntryParser, TracePipeOps, TracePipeSnapshot,
-    TracePointMap,
+    global_init_events, TraceCmdLineCache, TraceEntryParser, TracePipeOps, TracePointMap,
 };
 extern crate alloc;
 

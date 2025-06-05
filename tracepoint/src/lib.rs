@@ -21,7 +21,9 @@ use core::{
 
 use lock_api::{Mutex, MutexGuard, RawMutex};
 pub use paste::paste;
-pub use point::{CommonTracePointMeta, TraceEntry, TracePoint, TracePointFunc};
+pub use point::{
+    CommonTracePointMeta, TraceEntry, TracePoint, TracePointCallBackFunc, TracePointFunc,
+};
 pub use trace_pipe::{
     TraceCmdLineCache, TraceEntryParser, TracePipeOps, TracePipeRaw, TracePipeSnapshot,
 };

@@ -102,11 +102,11 @@ macro_rules! define_event_trace{
 
             #[allow(non_snake_case)]
             pub fn [<trace_default_ $name>]<F:$crate::KernelTraceOps>(_data:&mut (dyn core::any::Any+Send+Sync), $($arg:$arg_type),* ){
-                #[repr(C)]
+                #[repr(C, packed)]
                 struct Entry {
                     $($entry: $entry_type,)*
                 }
-                #[repr(C)]
+                #[repr(C, packed)]
                 struct FullEntry {
                     common: $crate::TraceEntry,
                     entry: Entry,
@@ -129,25 +129,32 @@ macro_rules! define_event_trace{
                     entry,
                 };
 
-                F::trace_cmdline_push(pid);
-
                 let event_buf = unsafe {
                     core::slice::from_raw_parts(
                         &full_entry as *const FullEntry as *const u8,
                         core::mem::size_of::<FullEntry>(),
                     )
                 };
+
+                let func = |f:&alloc::boxed::Box<dyn $crate::TracePointCallBackFunc>|{
+                    f.call(event_buf);
+                };
+
+                [<__ $name>].raw_callback_list(&func);
+
+
+                F::trace_cmdline_push(pid);
                 F::trace_pipe_push_raw_record(event_buf);
             }
 
             #[allow(non_snake_case)]
-            pub fn [<trace_fmt_ $name>](buf_ptr: *const u8) -> alloc::string::String {
+            pub fn [<trace_fmt_ $name>](buf: &[u8]) -> alloc::string::String {
                 #[repr(C)]
                 struct Entry {
                     $($entry: $entry_type,)*
                 }
                 let $tp_ident = unsafe {
-                    &*(buf_ptr as *const Entry)
+                    &*(buf.as_ptr() as *const Entry)
                 };
                 let fmt = format!("{}", $fmt_expr);
                 fmt

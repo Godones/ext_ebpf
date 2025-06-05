@@ -33,7 +33,7 @@ pub enum PerfEventIoc {
 #[allow(unused)]
 /// `perf_event_open` syscall arguments.
 pub struct PerfProbeArgs {
-    pub config: perf_sw_ids,
+    pub config: PerfProbeConfig,
     pub name: String,
     pub offset: u64,
     pub size: u32,
@@ -45,6 +45,12 @@ pub struct PerfProbeArgs {
     pub sample_type: Option<perf_event_sample_format>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerfProbeConfig {
+    PerfSwIds(perf_sw_ids),
+    Raw(u64),
+}
+
 impl PerfProbeArgs {
     pub fn try_from_perf_attr<F: KernelAuxiliaryOps>(
         attr: &perf_event_attr,
@@ -54,8 +60,15 @@ impl PerfProbeArgs {
         flags: u32,
     ) -> Result<Self> {
         let ty = perf_type_id::try_from(attr.type_).map_err(|_| BpfError::InvalidArgument)?;
-        let config =
-            perf_sw_ids::try_from(attr.config as u32).map_err(|_| BpfError::InvalidArgument)?;
+        let config = match ty {
+            perf_type_id::PERF_TYPE_TRACEPOINT => PerfProbeConfig::Raw(attr.config as u64),
+            _ => {
+                let sw_id = perf_sw_ids::try_from(attr.config as u32)
+                    .map_err(|_| BpfError::InvalidArgument)?;
+                PerfProbeConfig::PerfSwIds(sw_id)
+            }
+        };
+
         let name = if ty == perf_type_id::PERF_TYPE_MAX {
             let name_ptr = unsafe { attr.__bindgen_anon_3.config1 } as *const u8;
             let name = F::string_from_user_cstr(name_ptr)?;
