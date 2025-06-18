@@ -1,0 +1,8 @@
+[build]
+target = "bpfel-unknown-none"
+rustflags = "-C debuginfo=2 -C link-arg=--btf"
+panic = "abort"
+
+
+[unstable]
+build-std = ["core"]

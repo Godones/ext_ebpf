@@ -54,7 +54,7 @@ mod tracepoint_test {
 
     define_event_trace!(
         TEST,
-        TP_lock(Mutex<()>),
+        TP_lock(spin::Mutex<()>),
         TP_kops(Kops),
         TP_system(tracepoint_test),
         TP_PROTO(a: u32, b: &TestS),

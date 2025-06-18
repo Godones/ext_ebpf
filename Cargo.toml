@@ -5,10 +5,15 @@ members = [
     "kprobe",
     "tracepoint",
     "rbpf",
-    "simple-ebpf",
     "ksym",
+    "unikernel/*",
     # "polyhal/example",
 ]
 exclude = ["polyhal"]
 
 resolver = "2"
+
+
+[workspace.dependencies]
+aya-obj = { path = "../aya/aya-obj" }
+aya = { path = "../aya/aya", default-features = false }

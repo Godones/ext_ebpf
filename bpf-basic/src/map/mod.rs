@@ -319,8 +319,7 @@ pub fn bpf_map_update_elem<F: KernelAuxiliaryOps>(arg: BpfMapUpdateArg) -> Resul
     res
 }
 
-pub fn bpf_map_freeze<F: KernelAuxiliaryOps>(arg: BpfMapUpdateArg) -> Result<()> {
-    let map_fd = arg.map_fd;
+pub fn bpf_map_freeze<F: KernelAuxiliaryOps>(map_fd:u32) -> Result<()> {
     log::info!("<bpf_map_freeze>: map_fd: {:}", map_fd);
     F::get_unified_map_from_fd(map_fd, |unified_map| unified_map.map().freeze())
 }

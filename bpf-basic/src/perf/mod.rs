@@ -1,3 +1,3 @@
 pub mod bpf;
 mod util;
-pub use util::{PerfEventIoc, PerfProbeArgs};
+pub use util::{PerfEventIoc, PerfProbeArgs, PerfProbeConfig};

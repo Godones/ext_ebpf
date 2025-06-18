@@ -287,7 +287,12 @@ pub fn global_init_events<L: RawMutex + 'static>() -> Result<TracingEventsManage
         / size_of::<CommonTracePointMeta<L>>();
     let tracepoint_data =
         unsafe { core::slice::from_raw_parts_mut(tracepoint_data_start, tracepoint_data_len) };
-
+    tracepoint_data.sort_by(|a, b| {
+        a.trace_point
+            .name()
+            .cmp(b.trace_point.name())
+            .then(a.trace_point.system().cmp(b.trace_point.system()))
+    });
     log::info!("tracepoint_data_len: {}", tracepoint_data_len);
 
     let mut tracepoint_map = events_manager.tracepoint_map();

@@ -43,8 +43,8 @@
 macro_rules! define_event_trace{
     (
         $name:ident,
-        TP_lock($lock:ty),
-        TP_kops($kops:ident),
+        TP_lock($lock:path),
+        TP_kops($kops:path),
         TP_system($system:ident),
         TP_PROTO($($arg:ident:$arg_type:ty),+ $(,)?),
         TP_STRUCT__entry{$($entry:ident:$entry_type:ty),+ $(,)?},
