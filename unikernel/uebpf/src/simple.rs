@@ -5,16 +5,16 @@ use ebpf_command::command::*;
 use net_aya::{eBPFCommandSend, ExtractInstruction, NetEbpfLoader};
 
 use crate::UdpChannel;
-
-const SERVER_ADDRESS: &str = "10.0.5.3:9970";
-
-pub fn simple_ebpf_test() -> Result<(), Box<dyn Error>> {
+pub fn simple_ebpf_test(server_addr: &str, server_port: u16) -> Result<(), Box<dyn Error>> {
     // Create a UDP socket
     // create an udp client that sends a message to the server
     let udp_socket = std::net::UdpSocket::bind("0.0.0.0:60924").unwrap();
     // nc -u 10.0.5.3 9970
 
-    let udp_channel = UdpChannel::new(udp_socket, SERVER_ADDRESS);
+    let server_address = format!("{server_addr}:{server_port}");
+    println!("Sending eBPF commands to server at {}", server_address);
+
+    let udp_channel = UdpChannel::new(udp_socket, &server_address);
 
     let bytes = std::fs::read("./target/bpfel-unknown-none/release/simple-ebpf").unwrap();
 
@@ -36,7 +36,6 @@ pub fn simple_ebpf_test() -> Result<(), Box<dyn Error>> {
     //     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit and return r0
     // ];
 
-    println!("Sending eBPF commands to server at {}", SERVER_ADDRESS);
     println!("Program size: {} bytes", prog.len());
 
     const TP_ID: u32 = 0;

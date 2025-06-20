@@ -6,15 +6,15 @@ use net_aya::{eBPFCommandSend, ExtractInstruction, NetEbpfLoader, NetHashMap};
 
 use crate::UdpChannel;
 
-const SERVER_ADDRESS: &str = "10.0.5.3:9970";
-
-pub fn complex_ebpf_test() -> Result<(), Box<dyn Error>> {
+pub fn complex_ebpf_test(server_addr: &str, server_port: u16) -> Result<(), Box<dyn Error>> {
     // Create a UDP socket
     // create an udp client that sends a message to the server
     let udp_socket = std::net::UdpSocket::bind("0.0.0.0:60924").unwrap();
     // nc -u 10.0.5.3 9970
+    let server_address = format!("{server_addr}:{server_port}");
+    println!("Sending eBPF commands to server at {}", server_address);
 
-    let udp_channel = UdpChannel::new(udp_socket, SERVER_ADDRESS);
+    let udp_channel = UdpChannel::new(udp_socket, &server_address);
 
     let bytes = std::fs::read("./target/bpfel-unknown-none/release/complex-ebpf").unwrap();
 
@@ -28,7 +28,6 @@ pub fn complex_ebpf_test() -> Result<(), Box<dyn Error>> {
     let prog = &info.instructions;
     let prog_name = info.name.as_deref().unwrap_or("unknown");
 
-    println!("Sending eBPF commands to server at {}", SERVER_ADDRESS);
     println!("Program size: {} bytes", prog.len());
 
     const TP_ID: u32 = 1;
@@ -65,7 +64,7 @@ pub fn complex_ebpf_test() -> Result<(), Box<dyn Error>> {
     {
         // let _ = eBPFCommand::GetTPInfo.send_command(&udp_channel)?;
         // sleep(std::time::Duration::from_secs(10));
-        rand_connect();
+        rand_connect(format!("{server_addr}:9999").as_str());
     }
 
     let map: HashMap<_, u64, u64> = HashMap::try_from(net_ebpf.map_mut("IP_COUNTERS").unwrap())?;
@@ -97,17 +96,17 @@ pub fn complex_ebpf_test() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn rand_connect() {
+fn rand_connect(qemu_test_address: &str) {
     const TEST_ITER: usize = 10;
     for _ in 0..TEST_ITER {
         let port = rand::random::<u16>();
-        // port: 5555-65535
-        let port = port % (65535 - 5555) + 5555;
+        // port: 55555-65535
+        let port = port % (65535 - 55555) + 55555;
         let udp_socket = std::net::UdpSocket::bind(format!("0.0.0.0:{}", port)).unwrap();
         udp_socket
-            .send_to(b"Hello, server!", SERVER_ADDRESS)
+            .send_to(b"Hello, server!", qemu_test_address)
             .unwrap();
-        println!(" {} Sent message to {}", port, SERVER_ADDRESS);
+        println!(" {} Sent message to {}", port, qemu_test_address);
         sleep(std::time::Duration::from_secs(1));
     }
 }

@@ -210,12 +210,12 @@ pub fn perf_event_output<F: KernelAuxiliaryOps>(
 
 /// See https://ebpf-docs.dylanreimerink.nl/linux/helper-function/bpf_probe_read/
 fn raw_bpf_probe_read(dst: *mut c_void, size: u32, unsafe_ptr: *const c_void) -> i64 {
-    log::info!(
-        "raw_bpf_probe_read, dst:{:x}, size:{}, unsafe_ptr: {:x}",
-        dst as usize,
-        size,
-        unsafe_ptr as usize
-    );
+    // log::info!(
+    //     "raw_bpf_probe_read, dst:{:x}, size:{}, unsafe_ptr: {:x}",
+    //     dst as usize,
+    //     size,
+    //     unsafe_ptr as usize
+    // );
     let (dst, src) = unsafe {
         let dst = core::slice::from_raw_parts_mut(dst as *mut u8, size as usize);
         let src = core::slice::from_raw_parts(unsafe_ptr as *const u8, size as usize);
@@ -232,7 +232,7 @@ fn raw_bpf_probe_read(dst: *mut c_void, size: u32, unsafe_ptr: *const c_void) ->
 /// bytes from kernel space address unsafe_ptr and
 /// store the data in dst.
 pub fn bpf_probe_read(dst: &mut [u8], src: &[u8]) -> Result<()> {
-    log::info!("bpf_probe_read: len: {}", dst.len());
+    // log::info!("bpf_probe_read: len: {}", dst.len());
     dst.copy_from_slice(src);
     Ok(())
 }

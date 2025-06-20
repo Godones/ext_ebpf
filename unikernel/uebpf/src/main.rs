@@ -37,7 +37,9 @@ impl NetChannel for UdpChannel {
 
 fn main() -> Result<(), Box<dyn Error>> {
     env_logger::try_init_from_env(env_logger::Env::default().default_filter_or("debug"))?;
-    simple::simple_ebpf_test()?;
-    complex::complex_ebpf_test()?;
+    let server_port = 9970;
+    let server_addr = "10.0.5.3"; // Default server address
+    simple::simple_ebpf_test(server_addr, server_port)?;
+    complex::complex_ebpf_test(server_addr, server_port)?;
     Ok(())
 }

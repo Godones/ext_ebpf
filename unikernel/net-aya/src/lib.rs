@@ -29,13 +29,13 @@ impl eBPFCommandSend for eBPFCommand<'_> {
             .recv_response(&mut buf)
             .map_err(|e| format!("Failed to receive response: {}", e))?;
         let response = &buf[..len];
-        let response = unsafe { core::str::from_utf8_unchecked(response) };
-        if response.starts_with("OK:") {
-            Ok(response[3..].to_string())
-        } else if response.starts_with("ERROR:") {
-            Err(response[6..].to_string())
+        let response_str = unsafe { core::str::from_utf8_unchecked(response) };
+        if response_str.starts_with("OK:") {
+            unsafe { Ok(String::from_utf8_unchecked(response[3..].to_vec())) }
+        } else if response_str.starts_with("ERROR:") {
+            Err(response_str[6..].to_string())
         } else {
-            Err(format!("Server responded with error: {}", response))
+            Err(format!("Server responded with error: {response_str}"))
         }
     }
 }
