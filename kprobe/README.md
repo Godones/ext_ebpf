@@ -30,6 +30,9 @@ let kprobe = register_kprobe(
 unregister_kprobe(&mut manager, &mut point_list, kprobe);
 ```
 
+## Example
+- See [DragonOS Kprobe](https://github.com/DragonOS-Community/DragonOS/tree/master/kernel/src/debug/kprobe) for more details.
+- See [Alien Kprobe](https://github.com/Godones/Alien/blob/main/kernel/src/kprobe/mod.rs) for more details.
 
 ## API Overview
 

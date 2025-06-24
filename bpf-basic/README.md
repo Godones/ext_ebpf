@@ -47,5 +47,9 @@ The crate defines a custom `BpfError` enum with the following variants:
 - `NoSpace`: Insufficient space
 
 
-
+## Example
+- See [DragonOS eBPF with Kprobe](https://github.com/DragonOS-Community/DragonOS/blob/master/kernel/src/perf/kprobe.rs) for more details.
+- See [DragonOS eBPF with Tracepoint](https://github.com/DragonOS-Community/DragonOS/blob/master/kernel/src/perf/tracepoint.rs) for more details.
+- See [Alien eBPF with Kprobe](https://github.com/Godones/Alien/blob/main/kernel/src/perf/kprobe.rs) for more details.
+- See [Hermit eBPF with Tracepoint](https://github.com/os-module/hermit-kernel/blob/dev/src/tracepoint/hook.rs)
 

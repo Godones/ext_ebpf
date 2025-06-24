@@ -9,7 +9,7 @@ eBPF（Extended Berkeley Packet Filter）是一种强大的内核技术，允许
 
 
 ## ext-ebpf的设计目标
-1. **可移植性**：ext-ebpf旨在提供一个跨平台的eBPF实现，能够在不同的操作系统和硬件架构上运行。它将eBPF的核心功能与特定平台的内核功能解耦，使得开发者可以在不同环境中使用eBPF。
+1. **可移植性**：ext-ebpf旨在提供一系列小的用于支持eBPF的组件，能够在不同的操作系统和硬件架构上运行。它将eBPF的核心功能与特定平台的内核功能解耦，使得开发者可以在不同环境中使用eBPF。
 2. **易用性**：ext-ebpf提供了简单易用的API，使得开发者可以轻松地在内核中添加诸如kprobe、tracepoint等功能。它还提供了丰富的文档和示例代码，帮助开发者快速上手。
 3. **性能**：为了尽可能采用JIT编译技术，ext-ebpf向[rbpf](https://github.com/qmonnet/rbpf) 完善了JIT的支持，同时允许在no_std环境中使用。
 
@@ -42,6 +42,15 @@ eBPF映射是eBPF程序与内核之间共享数据的机制。ext-ebpf提供了�
 - **kprobe**：一个Rust crate，用于在内核中实现kprobe功能。它提供了一种动态插桩内核函数并在运行时收集数据的方式。
 - **bpf-basic**：一个Rust库，提供eBPF编程的基本抽象和实用工具。它为开发者提供了一个简单的接口来编写和管理eBPF程序。
 - **rbpf**：一个eBPF程序执行的虚拟机。它提供了一个高效的执行环境，支持JIT编译和no_std环境。
+
+## Unikernel 相关组件
+- simple-ebpf/：一个简单的 eBPF 程序示例，演示如何通过 tracepoint 追踪内核事件（如 sys_enter_openat）
+- complex-ebpf/：一个复杂的 eBPF 程序示例，实现了对网络包的源 IP 和端口计数，展示了 eBPF 在网络流量分析中的应用。
+- ebpf-command/：定义 eBPF server 与 client 之间的命令协议和数据结构，支持 eBPF 程序的加载、附加、启用、禁用、卸载等操作。
+- net-aya/：提供 eBPF server 端的网络通信、eBPF 程序加载与管理、map 操作等功能的抽象，支持通过自定义通道（如 UDP）与 client 交互。
+- uebpf/：unikernel eBPF 客户端主程序，集成 simple/complex eBPF 示例，负责通过 UDP 通道与 server 交互，远程管理 eBPF 程序和 map，实现端到端的 eBPF 管理与数据采集。
+
+> 注意：unikernel的uebpf组件目前工作在hermit内核上，其他内核可能需要根据具体实现进行适配。
 
 
 ## eBPF的当前状态
@@ -77,10 +86,60 @@ eBPF映射是eBPF程序与内核之间共享数据的机制。ext-ebpf提供了�
 - 在unikernel中实现一个简单的文件系统接口，允许eBPF程序将数据写入到文件中，然后通过网络读取这些文件。
 
 
-## 下一步工作
 
-- [ ] 在[Hermit](https://github.com/hermit-os/kernel) 中添加kprobe/tracepoint功能
-- [ ] 在[Hermit](https://github.com/hermit-os/kernel) 中实现eBPF程序的加载和执行
+## Hermit OS的实践
+
+### eBPF Server 和 eBPF client
+由于unikernel通常没有用户空间和内核空间的分离，因此在unikernel中实现eBPF程序的加载和执行需要一些特殊的处理。我们可以在unikernel中实现一个eBPF server和eBPF client的模型。通常，unikernel都会支持多任务和网络，因此，我们可以在内核中引入一个eBPF server任务，该任务负责监听来自eBPF client的请求，并根据请求加载、执行或管理eBPF程序。在客户端，我们可以在宿主机上编译eBPF程序，并通过网络将其发送到unikernel的eBPF server。eBPF server接收到eBPF程序后，可以将其加载到内核中，并执行相应的操作。
+
+### 内核钩子
+在hermit这样轻量级的内核中，引入kprobe比较重量级，且可能会影响内核性能，我们选择使用tracepoint来实现eBPF的钩子功能。我们使用tracepoint库来在内核中实现tracepoint功能。大多数功能已经在库中实现。在内核中要做的就是进一步实现tracepoint库定义的外部接口。
+
+### eBPF程序
+我们没有从零实现用户库来解析和处理eBPF程序。在客户端，我们重用了Aya库。由于Aya库通常只能工作在Linux内核上，因此我们将其在处理eBPF程序时设计到系统调用的部分替换为我们的实现。
+
+比如当库在解析eBPF程序时，需要创建Map的文件描述符。我们需要将这个操作对应的系统调用转换为一个创建Map的命令，并通过网络发送到unikernel的eBPF server。eBPF server接收到命令后，创建Map并返回一个标识符给客户端。客户端可以使用这个标识符来访问Map。相应的，其它类似的系统调用也需要进行类似的处理。
+
+目前已经支持的命令：
+```rust
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct eBPFCommandType: u32 {
+        const LOAD_PROGRAM = 0x01;
+        const REMOVE_PROGRAM = 0x02;
+        const ATTACH_PROGRAM = 0x03;
+        const DETACH_PROGRAM = 0x04;
+        const GET_TP_INFO = 0x05;
+        const ENABLE_TP = 0x06;
+        const DISABLE_TP = 0x07;
+        const CREATE_MAP = 0x08;
+        const UPDATE_MAP = 0x09;
+        const FREEZE_MAP = 0x0A;
+        const DELETE_MAP = 0x0B;
+        const MAP_GET_NEXT_KEY = 0x0C;
+        const LOOKUP_MAP = 0x0D;
+    }
+}
+```
+尽管重用了Aya库，我们仍然需要对其进行一些修改，从而将其数据结构公开给我们的工具使用。
+
+### eBPF映射
+因为我们已经使用通过修改Aya来处理eBPF程序，这使得我们不用再在内核中手动解析eBPF程序使用的Map。我们直接参考在两个宏内核上的实现。
+
+### eBPF Command
+
+现在系统调用变成了一系列以网络进行传输的命令，内核就需要工具这些命令执行对应操作，这些操作可以和eBPF映射一样，参考在宏内核上的实现。
+
+
+### 局限性
+
+通过网络来传输信息和命令，意味着要占据网络带宽。除了获取Tracepoint的信息外，我们没有添加其它命令来传输内核的信息，比如获取eBPF程序使用printk输出到内核缓冲区的信息。我们认为，在unikernel进行这种输出是没有意义的。因此，我们更倾向于eBPF程序使用Map来收集数据，然后通过网络将Map中的数据发送到客户端。
+
+
+## 工作进展
+
+- [x] 在[Hermit](https://github.com/hermit-os/kernel) 中添加kprobe/tracepoint功能
+- [x] 在[Hermit](https://github.com/hermit-os/kernel) 中实现eBPF程序的加载和执行
 
 ## Reference
 

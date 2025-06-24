@@ -11,38 +11,30 @@ This project aims to provide a set of components for adding eBPF support to the 
 - [rbpf](rbpf/): This crate contains a virtual machine for eBPF program execution.
 
 
+
+## Unikernel Components
+
+- [simple-ebpf](unikernel/simple-ebpf/): A minimal eBPF program example that demonstrates how to trace kernel events (such as `sys_enter_openat`) using tracepoints. It shows the full lifecycle management of eBPF programs (load, attach, enable, disable, unload) via a UDP channel to an eBPF server.
+- [complex-ebpf](unikernel/complex-ebpf/): A more advanced eBPF program example that counts source IPs and ports from network packets, showcasing eBPF's application in network traffic analysis. It supports dynamic management and reading of eBPF map data via UDP communication with the server.
+- [ebpf-command](unikernel/ebpf-command/): Defines the command protocol and data structures for communication between the eBPF server and client, supporting operations such as loading, attaching, enabling, disabling, and removing eBPF programs.
+- [net-aya](unikernel/net-aya/): Provides abstractions for network communication, eBPF program loading and management, and map operations on the server side. It enables custom channels (such as UDP) for client-server interaction.
+- [uebpf](unikernel/uebpf/): The main unikernel eBPF client program, integrating both simple and complex eBPF examples. It manages eBPF programs and maps remotely via UDP, enabling end-to-end eBPF management and data collection in unikernel environments.
+
+
+
 ## Roadmap
 - [x] Implement basic kprobe support
 - [x] Implement basic tracepoint support
 - [x] Implement basic eBPF map and helper functions
-- [ ] Implement basic eBPF support in some kernels 
+- [x] Implement basic eBPF support in some kernels 
     - Monolithic kernels
         - [x] [DragonOS](https://github.com/DragonOS-Community/DragonOS)
         - [x] [Alien](https://github.com/Godones/Alien)
     - Unikernel
-        - [ ] [Hermit](https://github.com/hermit-os/kernel) 
+        - [x] [Hermit](https://github.com/os-module/hermit-rs/tree/dev) 
 - [ ] Implement more eBPF maps and helper functions
 - [ ] Implement other kernel hooks
 
-## Contributing
-
-Contributions are welcome! Here are some guidelines to help you get started:
-
-### Getting Started
-
-1. Fork the repository
-2. Create a new branch for your feature or bugfix
-3. Make your changes
-4. Run tests and ensure they pass
-5. Submit a pull request
-
-### Code Style
-
-- Follow Rust's standard formatting guidelines
-- Use `cargo fmt` to format your code
-- Ensure your code passes `cargo clippy` checks
-- Add appropriate documentation comments
-- Include tests for new functionality
 
 ### License
 

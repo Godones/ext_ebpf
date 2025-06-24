@@ -28,82 +28,35 @@ pub static TRACE_RAW_PIPE: Mutex<tracepoint::TracePipeRaw> =
 pub struct Kops;
 
 impl KernelTraceOps for Kops {
-    fn cpu_id() -> u32 {
-        0
-    }
-
-    fn current_pid() -> u32 {
-        1
-    }
-
-    fn time_now() -> u64 {
-        time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64
-    }
-
-    fn trace_pipe_push_raw_record(buf: &[u8]) {
-        let mut pipe = TRACE_RAW_PIPE.lock();
-        pipe.push_event(buf.to_vec());
-    }
+    ... // Implement required methods
 }
 
 // Define tracepoint
 define_event_trace!(
-    Mutex<()>,
-    Kops,
     TEST,
-    TP_PROTO(a: u32, b: &TestS),
-    TP_STRUCT__entry{
-        a: u32,
-        b: u32,
-    },
-    TP_fast_assign{
-        a: a,
-        b: *b.b.deref().deref(),
-    },
-    TP_ident(__entry),
-    // Custom tracepoint print format
-    TP_printk{
-        let arg1 = __entry.a;
-        let arg2 = __entry.b;
-        format!("Hello from tracepoint! a={:?}, b={}", arg1, arg2)
-    }
-);
-
-define_event_trace!(
-    Mutex<()>,
-    Kops,
-    TEST2,
+    TP_lock(Mutex<()>),
+    TP_kops(Kops),
+    TP_system(tracepoint_test),
     TP_PROTO(a: u32, b: u32),
     TP_STRUCT__entry{
         a: u32,
-        b: u32,
+        b: u32
     },
     TP_fast_assign{
         a:a,
-        b:b,
+        b:b
     },
     TP_ident(__entry),
-    // Custom tracepoint print format
-    TP_printk{
-        format_args!("Hello from tracepoint! a={}, b={}", __entry.a, __entry.b)
-    }
+    TP_printk(format_args!("Hello from tracepoint! a={}, b={}", __entry.a, __entry.b))
 );
 // Use the tracepoint in kernel code
  pub fn test_trace(a: u32, b: u32) {
-    let x = TestS {
-        a,
-        b: Box::new(Arc::new(b)),
-    };
-    // first tracepoint
+    // call the tracepoint
     trace_TEST(a, &x);
-    // second tracepoint
-    trace_TEST2(a, b);
     println!("Tracepoint TEST called with a={}, b={}", a, b);
 }
 ```
+
 See example in `examples/usage.rs` for a complete example.
 ### Managing Tracepoints
 
@@ -140,6 +93,9 @@ The crate provides several key components:
 
 This crate is designed for kernel space usage and:
 - Uses `#![no_std]` for kernel compatibility
-- Implements proper synchronization primitives for kernel thread safety
 - Provides safe abstractions for kernel tracepoint management
 
+
+## Example
+- See [DragonOS tracepoint](https://github.com/DragonOS-Community/DragonOS/blob/master/kernel/src/debug/tracing/mod.rs) for more details.
+- See [Hermit tracepoint](https://github.com/os-module/hermit-kernel/blob/dev/src/tracepoint/mod.rs) for more details.
