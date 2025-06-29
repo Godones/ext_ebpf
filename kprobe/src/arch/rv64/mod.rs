@@ -13,7 +13,8 @@ use crate::{
     kretprobe::{rethook_trampoline_handler, KretprobeInstance},
     KprobeBasic, KprobeBuilder, KprobeOps,
 };
-const EBREAK_INST: u32 = 0x00100073; // ebreak
+
+// const EBREAK_INST: u32 = 0x00100073; // ebreak
 const C_EBREAK_INST: u32 = 0x9002; // c.ebreak
 const INSN_LENGTH_MASK: u16 = 0x3;
 const INSN_LENGTH_32: u16 = 0x3;
@@ -143,13 +144,13 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
             let inst_32 = unsafe { core::ptr::read(address as *const u32) };
             point.old_instruction = OpcodeTy::Inst32(inst_32);
             unsafe {
-                F::set_writeable_for_address(address, 4, true);
-                core::ptr::write(address as *mut u32, EBREAK_INST);
-                F::set_writeable_for_address(address, 4, false);
+                F::set_writeable_for_address(address, 2, true);
+                core::ptr::write(address as *mut u16, C_EBREAK_INST as _);
+                F::set_writeable_for_address(address, 2, false);
                 // inst_32 :0-32
                 // ebreak  :32-64
                 core::ptr::write(inst_tmp_ptr as *mut u32, inst_32);
-                core::ptr::write((inst_tmp_ptr + 4) as *mut u32, EBREAK_INST);
+                core::ptr::write((inst_tmp_ptr + 4) as *mut u16, C_EBREAK_INST as _);
             }
         }
         unsafe {
@@ -173,15 +174,18 @@ impl<F: KprobeAuxiliaryOps> KprobeOps for Rv64KprobePoint<F> {
             OpcodeTy::Inst32(_) => address + 4,
         }
     }
+
     fn single_step_address(&self) -> usize {
         self.inst_tmp_ptr
     }
+
     fn debug_address(&self) -> usize {
         match self.old_instruction {
             OpcodeTy::Inst16(_) => self.inst_tmp_ptr + 2,
             OpcodeTy::Inst32(_) => self.inst_tmp_ptr + 4,
         }
     }
+
     fn break_address(&self) -> usize {
         self.addr
     }

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-printf-compat = { version = "0.1.1", default-features = false }
+printf-compat = { git = "https://github.com/lights0123/printf-compat", default-features = false, rev = "5f5c9cc" }
 bitflags = "2.9"
 lru = { version = "0.14", features = ["nightly"] }
 log = "0.4"
