@@ -1,22 +1,26 @@
 use alloc::sync::Arc;
 use core::{
     alloc::Layout,
+    fmt::Debug,
     ops::{Deref, DerefMut},
 };
 
 use lock_api::RawMutex;
 
 use super::KprobeAuxiliaryOps;
-use crate::{KprobeBasic, KprobeBuilder, KprobeOps, ProbeArgs};
-const BRK_KPROBE_BP: u64 = 10;
-const BRK_KPROBE_SSTEPBP: u64 = 11;
+use crate::{
+    kretprobe::{rethook_trampoline_handler, KretprobeInstance},
+    KprobeBasic, KprobeBuilder, KprobeOps,
+};
+// const BRK_KPROBE_BP: u64 = 10;
+// const BRK_KPROBE_SSTEPBP: u64 = 11;
 const EBREAK_INST: u32 = 0x002a0000;
 
-#[derive(Debug)]
 pub struct Kprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
     basic: KprobeBasic<L>,
     point: Arc<LA64KprobePoint<F>>,
 }
+
 #[derive(Debug)]
 pub struct LA64KprobePoint<F: KprobeAuxiliaryOps> {
     addr: usize,
@@ -41,6 +45,15 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> DerefMut for Kprobe<L, F> {
 impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Kprobe<L, F> {
     pub fn probe_point(&self) -> &Arc<LA64KprobePoint<F>> {
         &self.point
+    }
+}
+
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Debug for Kprobe<L, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Kprobe")
+            .field("basic", &self.basic)
+            .field("point", &self.point)
+            .finish()
     }
 }
 
@@ -128,15 +141,154 @@ impl<F: KprobeAuxiliaryOps> KprobeOps for LA64KprobePoint<F> {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[repr(align(8))]
+pub struct PtRegs {
+    pub regs: [usize; 32],
+    pub orig_a0: usize,
+    pub csr_era: usize,
+    pub csr_badvaddr: usize,
+    pub csr_crmd: usize,
+    pub csr_prmd: usize,
+    pub csr_euen: usize,
+    pub csr_ecfg: usize,
+    pub csr_estat: usize,
+}
+
+impl PtRegs {
+    pub(crate) fn break_address(&self) -> usize {
+        self.csr_era
+    }
+
+    pub(crate) fn debug_address(&self) -> usize {
+        self.csr_era
+    }
+
+    pub(crate) fn update_pc(&mut self, pc: usize) {
+        self.csr_era = pc;
+    }
+
+    pub fn ret_value(&self) -> usize {
+        self.regs[4]
+    }
+}
+
 /// Set up a single step for the given address.
 /// This function updates the program counter (PC) to the specified address.
-pub(crate) fn setup_single_step(frame: &mut dyn ProbeArgs, single_step_address: usize) {
-    frame.update_pc(single_step_address);
+pub(crate) fn setup_single_step(pt_regs: &mut PtRegs, single_step_address: usize) {
+    pt_regs.update_pc(single_step_address);
 }
 
 /// Clear the single step for the given address.
 ///
 /// This function updates the program counter (PC) to the specified address.
-pub(crate) fn clear_single_step(frame: &mut dyn ProbeArgs, single_step_address: usize) {
-    frame.update_pc(single_step_address);
+pub(crate) fn clear_single_step(pt_regs: &mut PtRegs, single_step_address: usize) {
+    pt_regs.update_pc(single_step_address);
+}
+
+#[naked]
+pub(crate) unsafe extern "C" fn arch_rethook_trampoline<
+    L: RawMutex + 'static,
+    F: KprobeAuxiliaryOps + 'static,
+>() {
+    core::arch::naked_asm!(
+        "addi.d $sp, $sp, -{pt_regs_size}",
+        "st.d $ra, $sp, 1*8",
+        "st.d $tp, $sp, 2*8",
+        "st.d $a0, $sp, 4*8",
+        "st.d $a1, $sp, 5*8",
+        "st.d $a2, $sp, 6*8",
+        "st.d $a3, $sp, 7*8",
+        "st.d $a4, $sp, 8*8",
+        "st.d $a5, $sp, 9*8",
+        "st.d $a6, $sp, 10*8",
+        "st.d $a7, $sp, 11*8",
+        "st.d $t0, $sp, 12*8",
+        "st.d $t1, $sp, 13*8",
+        "st.d $t2, $sp, 14*8",
+        "st.d $t3, $sp, 15*8",
+        "st.d $t4, $sp, 16*8",
+        "st.d $t5, $sp, 17*8",
+        "st.d $t6, $sp, 18*8",
+        "st.d $t7, $sp, 19*8",
+        "st.d $t8, $sp, 20*8",
+        "st.d $r21, $sp, 21*8",
+        "st.d $fp, $sp, 22*8",
+        "st.d $s0, $sp, 23*8",
+        "st.d $s1, $sp, 24*8",
+        "st.d $s2, $sp, 25*8",
+        "st.d $s3, $sp, 26*8",
+        "st.d $s4, $sp, 27*8",
+        "st.d $s5, $sp, 28*8",
+        "st.d $s6, $sp, 29*8",
+        "st.d $s7, $sp, 30*8",
+        "st.d $s8, $sp, 31*8",
+
+        "addi.d $t0, $sp, {pt_regs_size}",
+        "st.d $t0, $sp, 3*8", // sp
+        "move $a0, $sp", // pt_regs pointer
+
+        "bl {callback}",
+
+        "move $ra, $a0", // Restore return address
+        "ld.d $tp, $sp, 2*8",
+        "ld.d $a0, $sp, 4*8",
+        "ld.d $a1, $sp, 5*8",
+        "ld.d $a2, $sp, 6*8",
+        "ld.d $a3, $sp, 7*8",
+        "ld.d $a4, $sp, 8*8",
+        "ld.d $a5, $sp, 9*8",
+        "ld.d $a6, $sp, 10*8",
+        "ld.d $a7, $sp, 11*8",
+        "ld.d $t0, $sp, 12*8",
+        "ld.d $t1, $sp, 13*8",
+        "ld.d $t2, $sp, 14*8",
+        "ld.d $t3, $sp, 15*8",
+        "ld.d $t4, $sp, 16*8",
+        "ld.d $t5, $sp, 17*8",
+        "ld.d $t6, $sp, 18*8",
+        "ld.d $t7, $sp, 19*8",
+        "ld.d $t8, $sp, 20*8",
+        "ld.d $r21, $sp, 21*8",
+        "ld.d $fp, $sp, 22*8",
+        "ld.d $s0, $sp, 23*8",
+        "ld.d $s1, $sp, 24*8",
+        "ld.d $s2, $sp, 25*8",
+        "ld.d $s3, $sp, 26*8",
+        "ld.d $s4, $sp, 27*8",
+        "ld.d $s5, $sp, 28*8",
+        "ld.d $s6, $sp, 29*8",
+        "ld.d $s7, $sp, 30*8",
+        "ld.d $s8, $sp, 31*8",
+        "addi.d $sp, $sp, {pt_regs_size}",
+        "jr $ra",
+        pt_regs_size = const core::mem::size_of::<PtRegs>(),
+        callback = sym arch_rethook_trampoline_callback::<L, F>,
+    )
+}
+
+pub(crate) fn arch_rethook_trampoline_callback<
+    L: RawMutex + 'static,
+    F: KprobeAuxiliaryOps + 'static,
+>(
+    pt_regs: &mut PtRegs,
+) -> usize {
+    rethook_trampoline_handler::<L, F>(pt_regs, 0)
+}
+
+pub(crate) fn arch_rethook_fixup_return(_pt_regs: &mut PtRegs, _correct_ret_addr: usize) {
+    // Set the return address to the correct one
+    // pt_regs.ra = correct_ret_addr as usize; // we don't need to set ra,
+}
+
+/// Prepare the kretprobe instance for the rethook.
+pub(crate) fn arch_rethook_prepare<L: RawMutex + 'static, F: KprobeAuxiliaryOps + 'static>(
+    kretprobe_instance: &mut KretprobeInstance,
+    pt_regs: &mut PtRegs,
+) {
+    // Prepare the kretprobe instance for the rethook
+    kretprobe_instance.ret_addr = pt_regs.regs[1];
+    kretprobe_instance.frame = 0; // fp
+    pt_regs.regs[1] = arch_rethook_trampoline::<L, F> as _; // Set the return address to the trampoline
 }

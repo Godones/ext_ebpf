@@ -21,30 +21,14 @@ pub use rv64::*;
 #[cfg(target_arch = "x86_64")]
 pub use x86::*;
 
+use crate::kretprobe::KretprobeInstance;
+
 #[cfg(target_arch = "x86_64")]
 pub type KprobePoint<F> = X86KprobePoint<F>;
 #[cfg(target_arch = "riscv64")]
 pub type KprobePoint<F> = Rv64KprobePoint<F>;
 #[cfg(target_arch = "loongarch64")]
 pub type KprobePoint<F> = LA64KprobePoint<F>;
-
-pub trait ProbeArgs: Send {
-    /// User can down cast to get the real type
-    fn as_any(&self) -> &dyn Any;
-    /// User can down cast to get the real type
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-    /// Return the address of the instruction that caused the break exception
-    fn break_address(&self) -> usize;
-    /// Return the address of the instruction that caused the single step exception
-    ///
-    /// For x86_64, it is the address of the instruction that caused the single step exception
-    /// For other architectures, it is the address of the instruction that caused the break exception
-    fn debug_address(&self) -> usize;
-    fn update_pc(&mut self, pc: usize);
-    #[cfg(target_arch = "x86_64")]
-    /// Enable or disable single step execution. It's only used for x86_64 architecture.
-    fn set_single_step(&mut self, enable: bool);
-}
 
 pub trait KprobeOps: Send {
     /// The address of the instruction that program should return to
@@ -75,64 +59,84 @@ pub trait KprobeAuxiliaryOps: Send + Debug {
     fn alloc_executable_memory(layout: Layout) -> *mut u8;
     /// Deallocate executable memory
     fn dealloc_executable_memory(ptr: *mut u8, layout: Layout);
+    /// Insert a kretprobe instance to the current task
+    fn insert_kretprobe_instance_to_task(instance: KretprobeInstance);
+    /// Pop a kretprobe instance from the current task
+    fn pop_kretprobe_instance_from_task() -> KretprobeInstance;
 }
 
-struct ProbeHandler {
-    func: fn(&dyn ProbeArgs),
+pub trait ProbeData: Any + Send + Sync + Debug {
+    fn as_any(&self) -> &dyn Any;
+}
+
+pub type ProbeHandlerFunc = fn(&(dyn ProbeData), &mut PtRegs);
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ProbeHandler {
+    pub(crate) func: ProbeHandlerFunc,
 }
 
 impl ProbeHandler {
-    pub fn new(func: fn(&dyn ProbeArgs)) -> Self {
+    pub fn new(func: ProbeHandlerFunc) -> Self {
         ProbeHandler { func }
     }
 
-    pub fn call(&self, trap_frame: &dyn ProbeArgs) {
-        (self.func)(trap_frame);
+    pub fn call(&self, data: &(dyn ProbeData), pt_regs: &mut PtRegs) {
+        (self.func)(data, pt_regs);
     }
 }
 
 pub struct KprobeBuilder<F: KprobeAuxiliaryOps> {
-    symbol: Option<String>,
-    symbol_addr: usize,
-    offset: usize,
-    pre_handler: ProbeHandler,
-    post_handler: ProbeHandler,
-    fault_handler: Option<ProbeHandler>,
-    event_callbacks: BTreeMap<u32, Box<dyn CallBackFunc>>,
-    probe_point: Option<Arc<KprobePoint<F>>>,
-    enable: bool,
-    _marker: core::marker::PhantomData<F>,
-}
-
-pub trait EventCallback: Send {
-    fn call(&self, trap_frame: &dyn ProbeArgs);
+    pub(crate) symbol: Option<String>,
+    pub(crate) symbol_addr: usize,
+    pub(crate) offset: usize,
+    pub(crate) pre_handler: Option<ProbeHandler>,
+    pub(crate) post_handler: Option<ProbeHandler>,
+    pub(crate) fault_handler: Option<ProbeHandler>,
+    pub(crate) event_callbacks: BTreeMap<u32, ProbeHandler>,
+    pub(crate) probe_point: Option<Arc<KprobePoint<F>>>,
+    pub(crate) enable: bool,
+    pub(crate) data: Option<Box<dyn ProbeData>>,
+    pub(crate) _marker: core::marker::PhantomData<F>,
 }
 
 impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
-    pub fn new(
-        symbol: Option<String>,
-        symbol_addr: usize,
-        offset: usize,
-        pre_handler: fn(&dyn ProbeArgs),
-        post_handler: fn(&dyn ProbeArgs),
-        enable: bool,
-    ) -> Self {
+    pub fn new(symbol: Option<String>, symbol_addr: usize, offset: usize, enable: bool) -> Self {
         KprobeBuilder {
             symbol,
             symbol_addr,
             offset,
-            pre_handler: ProbeHandler::new(pre_handler),
-            post_handler: ProbeHandler::new(post_handler),
+            pre_handler: None,
+            post_handler: None,
             event_callbacks: BTreeMap::new(),
             fault_handler: None,
             probe_point: None,
             enable,
+            data: None,
             _marker: core::marker::PhantomData,
         }
     }
 
+    /// Build the kprobe with a specific user data.
+    pub fn with_data<T: ProbeData>(mut self, data: T) -> Self {
+        self.data = Some(Box::new(data));
+        self
+    }
+
     /// Build the kprobe with a pre handler function.
-    pub fn with_fault_handler(mut self, func: fn(&dyn ProbeArgs)) -> Self {
+    pub fn with_pre_handler(mut self, func: ProbeHandlerFunc) -> Self {
+        self.pre_handler = Some(ProbeHandler::new(func));
+        self
+    }
+
+    /// Build the kprobe with a post handler function.
+    pub fn with_post_handler(mut self, func: ProbeHandlerFunc) -> Self {
+        self.post_handler = Some(ProbeHandler::new(func));
+        self
+    }
+
+    /// Build the kprobe with a pre handler function.
+    pub fn with_fault_handler(mut self, func: ProbeHandlerFunc) -> Self {
         self.fault_handler = Some(ProbeHandler::new(func));
         self
     }
@@ -146,9 +150,10 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
     pub fn with_event_callback(
         mut self,
         callback_id: u32,
-        event_callback: Box<dyn CallBackFunc>,
+        event_callback: ProbeHandlerFunc,
     ) -> Self {
-        self.event_callbacks.insert(callback_id, event_callback);
+        self.event_callbacks
+            .insert(callback_id, ProbeHandler::new(event_callback));
         self
     }
 
@@ -162,15 +167,12 @@ pub struct KprobeBasic<L: RawMutex + 'static> {
     symbol: Option<String>,
     symbol_addr: usize,
     offset: usize,
-    pre_handler: ProbeHandler,
-    post_handler: ProbeHandler,
-    fault_handler: ProbeHandler,
-    event_callbacks: Mutex<L, BTreeMap<u32, Box<dyn CallBackFunc>>>,
+    pre_handler: Option<ProbeHandler>,
+    post_handler: Option<ProbeHandler>,
+    fault_handler: Option<ProbeHandler>,
+    event_callbacks: Mutex<L, BTreeMap<u32, ProbeHandler>>,
     enable: AtomicBool,
-}
-
-pub trait CallBackFunc: Send + Sync {
-    fn call(&self, trap_frame: &dyn ProbeArgs);
+    data: Box<dyn ProbeData>,
 }
 
 impl<L: RawMutex + 'static> Debug for KprobeBasic<L> {
@@ -185,31 +187,39 @@ impl<L: RawMutex + 'static> Debug for KprobeBasic<L> {
 
 impl<L: RawMutex + 'static> KprobeBasic<L> {
     /// Call the pre handler function.
-    pub fn call_pre_handler(&self, trap_frame: &dyn ProbeArgs) {
-        self.pre_handler.call(trap_frame);
+    pub fn call_pre_handler(&self, pt_regs: &mut PtRegs) {
+        if let Some(ref handler) = self.pre_handler {
+            handler.call(self.data.as_ref(), pt_regs);
+        }
     }
 
     /// Call the post handler function.
-    pub fn call_post_handler(&self, trap_frame: &dyn ProbeArgs) {
-        self.post_handler.call(trap_frame);
+    pub fn call_post_handler(&self, pt_regs: &mut PtRegs) {
+        if let Some(ref handler) = self.post_handler {
+            handler.call(self.data.as_ref(), pt_regs);
+        }
     }
 
     /// Call the fault handler function.
-    pub fn call_fault_handler(&self, trap_frame: &dyn ProbeArgs) {
-        self.fault_handler.call(trap_frame);
+    pub fn call_fault_handler(&self, pt_regs: &mut PtRegs) {
+        if let Some(ref handler) = self.fault_handler {
+            handler.call(self.data.as_ref(), pt_regs);
+        }
     }
 
     /// Call the event callback function.
-    pub fn call_event_callback(&self, trap_frame: &dyn ProbeArgs) {
+    pub fn call_event_callback(&self, pt_regs: &mut PtRegs) {
         let event_callbacks = self.event_callbacks.lock();
         for callback in event_callbacks.values() {
-            callback.call(trap_frame);
+            callback.call(self.data.as_ref(), pt_regs);
         }
     }
 
     /// Register the event callback function.
-    pub fn register_event_callback(&self, callback_id: u32, callback: Box<dyn CallBackFunc>) {
-        self.event_callbacks.lock().insert(callback_id, callback);
+    pub fn register_event_callback(&self, callback_id: u32, callback: ProbeHandlerFunc) {
+        self.event_callbacks
+            .lock()
+            .insert(callback_id, ProbeHandler::new(callback));
     }
 
     /// Unregister the event callback function.
@@ -236,11 +246,14 @@ impl<L: RawMutex + 'static> KprobeBasic<L> {
     pub fn symbol(&self) -> Option<&str> {
         self.symbol.as_deref()
     }
+
+    pub(crate) fn get_data(&self) -> &(dyn ProbeData) {
+        self.data.as_ref()
+    }
 }
 
 impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> From<KprobeBuilder<F>> for KprobeBasic<L> {
     fn from(value: KprobeBuilder<F>) -> Self {
-        let fault_handler = value.fault_handler.unwrap_or(ProbeHandler::new(|_| {}));
         KprobeBasic {
             symbol: value.symbol,
             symbol_addr: value.symbol_addr,
@@ -248,8 +261,15 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> From<KprobeBuilder<F>> for Kp
             pre_handler: value.pre_handler,
             post_handler: value.post_handler,
             event_callbacks: Mutex::new(value.event_callbacks),
-            fault_handler,
+            fault_handler: value.fault_handler,
             enable: AtomicBool::new(value.enable),
+            data: value.data.unwrap_or_else(|| Box::new(())),
         }
+    }
+}
+
+impl ProbeData for () {
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
