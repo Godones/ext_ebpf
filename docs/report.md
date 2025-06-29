@@ -141,5 +141,45 @@ bitflags! {
 - [x] 在[Hermit](https://github.com/hermit-os/kernel) 中添加kprobe/tracepoint功能
 - [x] 在[Hermit](https://github.com/hermit-os/kernel) 中实现eBPF程序的加载和执行
 
+## 运行用例
+
+### DragonOS
+
+1. 根据[DragonOS](https://github.com/DragonOS-Community/DragonOS)的文档，编译内核和用户空间程序
+2. 运行Aya框架编写的两个测试程序
+   1. syscall_ebpf(使用kprobe跟踪机制实现的统计系统调用次数的功能)
+   2. mytrace(使用tracepoint跟踪机制实现的记录打开文件的名称的功能)
+
+### Alien
+
+1. 根据[Alien](https://github.com/Godones/Alien)的文档，编译内核和用户空间程序
+2. 运行Aya框架编写的测试程序
+   1. syscall_ebpf(使用kprobe跟踪机制实现的统计系统调用次数的功能)
+
+### Hermit
+1. clone hermit内核
+    ```
+    git clone https://github.com/os-module/hermit-rs.git --branch dev --recursive
+    ```
+2. 根据[官方文档](https://github.com/hermit-os/hermit-rs/wiki)确保环境准备妥当
+3. clone ext-ebpf
+    ```
+    git clone https://github.com/Godones/ext_ebpf
+    ```
+4. 开启两个终端
+5. 在第一个终端中，进入hermit-rs/hermit-no-std目录，运行以下命令编译并运行内核app
+   ```
+   cargo run --release
+   ```
+6. 在第二个终端中，进入ext-ebpf目录，运行以下命令编译并运行eBPF客户端
+   ```
+    cargo run -p uebpf
+   ```
+uebpf客户端包含两个测试：
+1. simple-ebpf：使用tracepoint跟踪机制实现的记录打开文件的名称的功能, 可以在内核终端看到输出
+2. complex-ebpf：使用tracepoint跟踪机制实现的记录网络包的源IP和端口的功能, 可以在客户端终端看到输出
+
+
+
 ## Reference
 
