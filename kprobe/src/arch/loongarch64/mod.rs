@@ -187,7 +187,7 @@ pub(crate) fn clear_single_step(pt_regs: &mut PtRegs, single_step_address: usize
     pt_regs.update_pc(single_step_address);
 }
 
-#[naked]
+#[unsafe(naked)]
 pub(crate) unsafe extern "C" fn arch_rethook_trampoline<
     L: RawMutex + 'static,
     F: KprobeAuxiliaryOps + 'static,

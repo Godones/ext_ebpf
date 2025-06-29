@@ -233,35 +233,8 @@ impl PtRegs {
     }
 }
 
-/*
- * When a target function returns, this code saves registers and calls
- * arch_rethook_trampoline_callback(), which calls the rethook handler.
- */
-// asm(
-// 	".text\n"
-// 	".global arch_rethook_trampoline\n"
-// 	".type arch_rethook_trampoline, @function\n"
-// 	"arch_rethook_trampoline:\n"
-// #ifdef CONFIG_X86_64
-// 	ANNOTATE_NOENDBR	/* This is only jumped from ret instruction */
-// 	/* Push a fake return address to tell the unwinder it's a rethook. */
-// 	"	pushq $arch_rethook_trampoline\n"
-// 	UNWIND_HINT_FUNC
-// 	"   pushq $" __stringify(__KERNEL_DS) "\n"
-// 	/* Save the 'sp - 16', this will be fixed later. */
-// 	"	pushq %rsp\n"
-// 	"	pushfq\n"
-// 	SAVE_REGS_STRING
-// 	"	movq %rsp, %rdi\n"
-// 	"	call arch_rethook_trampoline_callback\n"
-// 	RESTORE_REGS_STRING
-// 	/* In the callback function, 'regs->flags' is copied to 'regs->ss'. */
-// 	"	addq $16, %rsp\n"
-// 	"	popfq\n"
-// 	ASM_RET
-// 	".size arch_rethook_trampoline, .-arch_rethook_trampoline\n"
-// );
-#[naked]
+
+#[unsafe(naked)]
 pub(crate) unsafe extern "C" fn arch_rethook_trampoline<
     L: RawMutex + 'static,
     F: KprobeAuxiliaryOps + 'static,

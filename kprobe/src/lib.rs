@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(naked_functions)]
 #![cfg_attr(target_arch = "riscv64", feature(riscv_ext_intrinsics))]
 extern crate alloc;
 

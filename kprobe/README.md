@@ -56,3 +56,6 @@ unregister_kprobe(&mut manager, &mut point_list, kprobe);
 - This crate uses `#![no_std]` and is designed for kernel-level code
 - Proper synchronization is required when using kprobes in multi-threaded environments
 - Care must be taken when instrumenting critical kernel paths
+
+## Rust Version
+Requires Rust 1.88 or later(nightly).

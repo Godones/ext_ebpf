@@ -266,7 +266,7 @@ impl PtRegs {
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 pub(crate) unsafe extern "C" fn arch_rethook_trampoline<
     L: RawMutex + 'static,
     F: KprobeAuxiliaryOps + 'static,
