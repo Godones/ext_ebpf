@@ -15,5 +15,7 @@ resolver = "2"
 
 
 [workspace.dependencies]
-aya-obj = { path = "../aya/aya-obj" }
-aya = { path = "../aya/aya", default-features = false }
+# aya-obj = { path = "../aya/aya-obj" }
+# aya = { path = "../aya/aya", default-features = false }
+aya-obj = { git = "https://github.com/Godones/aya.git", branch = "dev" }
+aya = { git = "https://github.com/Godones/aya.git", branch = "dev", default-features = false }
