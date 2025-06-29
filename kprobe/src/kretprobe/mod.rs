@@ -10,8 +10,8 @@ use core::{any::Any, fmt::Debug, sync::atomic::AtomicU64};
 use lock_api::{Mutex, RawMutex};
 
 use crate::{
-    arch_rethook_fixup_return, arch_rethook_prepare, Kprobe, KprobeAuxiliaryOps, KprobeBuilder,
-    ProbeData, ProbeHandler, ProbeHandlerFunc, PtRegs,
+    arch_rethook_fixup_return, arch_rethook_prepare, CallBackFunc, Kprobe, KprobeAuxiliaryOps,
+    KprobeBuilder, ProbeData, ProbeHandler, ProbeHandlerFunc, PtRegs,
 };
 
 pub struct Kretprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
@@ -19,7 +19,7 @@ pub struct Kretprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
     nmissed: AtomicU64,
     entry_handler: Option<ProbeHandler>,
     ret_handler: Option<ProbeHandler>,
-    event_callbacks: Mutex<L, BTreeMap<u32, ProbeHandler>>,
+    event_callbacks: Mutex<L, BTreeMap<u32, Box<dyn CallBackFunc>>>,
 }
 
 unsafe impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Send for Kretprobe<L, F> {}
@@ -54,10 +54,8 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Kretprobe<L, F> {
     }
 
     /// Register the event callback function.
-    pub fn register_event_callback(&self, callback_id: u32, callback: ProbeHandlerFunc) {
-        self.event_callbacks
-            .lock()
-            .insert(callback_id, ProbeHandler::new(callback));
+    pub fn register_event_callback(&self, callback_id: u32, callback: Box<dyn CallBackFunc>) {
+        self.event_callbacks.lock().insert(callback_id, callback);
     }
 
     /// Unregister the event callback function.
@@ -252,7 +250,7 @@ pub(crate) fn rethook_trampoline_handler<L: RawMutex + 'static, F: KprobeAuxilia
 
     // call the event callbacks if they exist
     for callback in kretprobe.event_callbacks.lock().values() {
-        callback.call(user_data, pt_regs);
+        callback.call(pt_regs);
     }
 
     arch_rethook_fixup_return(pt_regs, correct_ret_addr);

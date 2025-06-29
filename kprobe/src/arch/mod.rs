@@ -86,6 +86,10 @@ impl ProbeHandler {
     }
 }
 
+pub trait CallBackFunc: Send + Sync {
+    fn call(&self, trap_frame: &mut PtRegs);
+}
+
 pub struct KprobeBuilder<F: KprobeAuxiliaryOps> {
     pub(crate) symbol: Option<String>,
     pub(crate) symbol_addr: usize,
@@ -93,7 +97,7 @@ pub struct KprobeBuilder<F: KprobeAuxiliaryOps> {
     pub(crate) pre_handler: Option<ProbeHandler>,
     pub(crate) post_handler: Option<ProbeHandler>,
     pub(crate) fault_handler: Option<ProbeHandler>,
-    pub(crate) event_callbacks: BTreeMap<u32, ProbeHandler>,
+    pub(crate) event_callbacks: BTreeMap<u32, Box<dyn CallBackFunc>>,
     pub(crate) probe_point: Option<Arc<KprobePoint<F>>>,
     pub(crate) enable: bool,
     pub(crate) data: Option<Box<dyn ProbeData>>,
@@ -150,10 +154,9 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
     pub fn with_event_callback(
         mut self,
         callback_id: u32,
-        event_callback: ProbeHandlerFunc,
+        event_callback: Box<dyn CallBackFunc>,
     ) -> Self {
-        self.event_callbacks
-            .insert(callback_id, ProbeHandler::new(event_callback));
+        self.event_callbacks.insert(callback_id, event_callback);
         self
     }
 
@@ -170,7 +173,7 @@ pub struct KprobeBasic<L: RawMutex + 'static> {
     pre_handler: Option<ProbeHandler>,
     post_handler: Option<ProbeHandler>,
     fault_handler: Option<ProbeHandler>,
-    event_callbacks: Mutex<L, BTreeMap<u32, ProbeHandler>>,
+    event_callbacks: Mutex<L, BTreeMap<u32, Box<dyn CallBackFunc>>>,
     enable: AtomicBool,
     data: Box<dyn ProbeData>,
 }
@@ -211,15 +214,13 @@ impl<L: RawMutex + 'static> KprobeBasic<L> {
     pub fn call_event_callback(&self, pt_regs: &mut PtRegs) {
         let event_callbacks = self.event_callbacks.lock();
         for callback in event_callbacks.values() {
-            callback.call(self.data.as_ref(), pt_regs);
+            callback.call(pt_regs);
         }
     }
 
     /// Register the event callback function.
-    pub fn register_event_callback(&self, callback_id: u32, callback: ProbeHandlerFunc) {
-        self.event_callbacks
-            .lock()
-            .insert(callback_id, ProbeHandler::new(callback));
+    pub fn register_event_callback(&self, callback_id: u32, callback: Box<dyn CallBackFunc>) {
+        self.event_callbacks.lock().insert(callback_id, callback);
     }
 
     /// Unregister the event callback function.
