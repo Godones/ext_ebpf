@@ -1,15 +1,22 @@
 [package]
 name = "ksym"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
 
 [dependencies]
 rustc-demangle = { version = "0.1", optional = true }
-
+lazyinit = { workspace = true }
 
 [features]
 demangle = ["dep:rustc-demangle"]
+assembly = []
 
 [[bin]]
 name = "gen_ksym"
+required-features = ["demangle"]
+
+[[bin]]
+name = "gen_ksym_as"
 required-features = ["demangle"]

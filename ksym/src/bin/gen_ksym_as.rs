@@ -6,6 +6,7 @@ use rustc_demangle::demangle;
 struct KernelSymbolEntry {
     vaddr: u64,
     symbol: String,
+    symbol_length: usize,
 }
 
 fn read_symbol(line: &str) -> Option<KernelSymbolEntry> {
@@ -27,7 +28,12 @@ fn read_symbol(line: &str) -> Option<KernelSymbolEntry> {
     } else {
         symbol = format!("{}", symbol);
     }
-    Some(KernelSymbolEntry { vaddr, symbol })
+    let symbol_length = symbol.len() + 1; // +1 for null terminator
+    Some(KernelSymbolEntry {
+        vaddr,
+        symbol,
+        symbol_length,
+    })
 }
 
 fn read_map() -> Vec<KernelSymbolEntry> {
@@ -48,11 +54,58 @@ fn read_map() -> Vec<KernelSymbolEntry> {
 }
 
 fn generate_result(symbol_table: &[KernelSymbolEntry]) {
-    // Generate ksyms_address
-    // like /proc/kallsyms
-    eprintln!("Generating kernel symbols: {} entries", symbol_table.len());
+    println!(".section .rodata\n");
+    println!(".global ksyms_address");
+    println!(".align 8\n");
+    println!("ksyms_address:");
+
+    let mut last_vaddr = 0;
+    let mut total_syms_to_write = 0;
+
     for entry in symbol_table {
-        print!("{:016x} T {}\n", entry.vaddr, entry.symbol);
+        if entry.vaddr == last_vaddr {
+            continue;
+        }
+        println!("\t.quad\t{:#x}", entry.vaddr);
+        total_syms_to_write += 1;
+        last_vaddr = entry.vaddr;
+    }
+
+    println!("\n.global ksyms_num");
+    println!(".align 8");
+    println!("ksyms_num:");
+    println!("\t.quad\t{}", total_syms_to_write);
+
+    println!("\n.global ksyms_names_index");
+    println!(".align 8");
+    println!("ksyms_names_index:");
+
+    let mut position = 0;
+    last_vaddr = 0;
+
+    for entry in symbol_table {
+        if entry.vaddr == last_vaddr {
+            continue;
+        }
+
+        println!("\t.quad\t{}", position);
+        position += entry.symbol_length;
+        last_vaddr = entry.vaddr;
+    }
+
+    println!("\n.global ksyms_names");
+    println!(".align 8");
+    println!("ksyms_names:");
+
+    last_vaddr = 0;
+
+    for entry in symbol_table {
+        if entry.vaddr == last_vaddr {
+            continue;
+        }
+
+        println!("\t.asciz\t\"{}\"", entry.symbol);
+        last_vaddr = entry.vaddr;
     }
 }
 
