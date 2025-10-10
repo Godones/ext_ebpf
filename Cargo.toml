@@ -4,10 +4,8 @@ members = [
 	"bpf-basic",
 	"kprobe",
 	"tracepoint",
-	"rbpf",
 	"ksym",
 	"unikernel/*",
-	# "polyhal/example",
 ]
 exclude = ["polyhal"]
 

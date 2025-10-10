@@ -4,6 +4,7 @@ use lock_api::RawMutex;
 
 use crate::{KernelTraceOps, TraceEntry, TracePointMap};
 
+/// A trait defining operations for a trace pipe buffer.
 pub trait TracePipeOps {
     /// Returns the first event in the trace pipe buffer without removing it.
     fn peek(&self) -> Option<&Vec<u8>>;
@@ -22,6 +23,7 @@ pub struct TracePipeRaw {
 }
 
 impl TracePipeRaw {
+    /// Create a new TracePipeRaw with the specified maximum number of records.
     pub const fn new(max_record: usize) -> Self {
         Self {
             max_record,
@@ -61,6 +63,11 @@ impl TracePipeRaw {
     pub fn snapshot(&self) -> TracePipeSnapshot {
         TracePipeSnapshot::new(self.event_buf.clone())
     }
+
+    /// Get the maximum number of records allowed in the trace pipe buffer.
+    pub fn max_record(&self) -> usize {
+        self.max_record
+    }
 }
 
 impl TracePipeOps for TracePipeRaw {
@@ -81,10 +88,12 @@ impl TracePipeOps for TracePipeRaw {
     }
 }
 
+/// A snapshot of the trace pipe buffer at a specific point in time.
 #[derive(Debug)]
 pub struct TracePipeSnapshot(Vec<Vec<u8>>);
 
 impl TracePipeSnapshot {
+    /// Create a new TracePipeSnapshot with the given event buffer.
     pub fn new(event_buf: Vec<Vec<u8>>) -> Self {
         Self(event_buf)
     }
@@ -131,13 +140,14 @@ impl TracePipeOps for TracePipeSnapshot {
 
 /// A cache for storing command line arguments for each trace point.
 ///
-/// See https://www.kernel.org/doc/Documentation/trace/ftrace.txt
+/// See <https://www.kernel.org/doc/Documentation/trace/ftrace.txt>
 pub struct TraceCmdLineCache {
     cmdline: Vec<(u32, [u8; 16])>,
     max_record: usize,
 }
 
 impl TraceCmdLineCache {
+    /// Create a new TraceCmdLineCache with the specified maximum number of records.
     pub const fn new(max_record: usize) -> Self {
         Self {
             cmdline: Vec::new(),
@@ -183,14 +193,49 @@ impl TraceCmdLineCache {
             self.cmdline.truncate(max_len); // Keep only the latest records
         }
     }
+
+    /// Get the maximum number of records in the cache.
+    pub fn max_record(&self) -> usize {
+        self.max_record
+    }
+
+    /// Create a snapshot of the current state of the command line cache.
+    pub fn snapshot(&self) -> TraceCmdLineCacheSnapshot {
+        TraceCmdLineCacheSnapshot::new(self.cmdline.clone())
+    }
 }
 
+/// A snapshot of the command line cache at a specific point in time.
+#[derive(Debug)]
+pub struct TraceCmdLineCacheSnapshot(Vec<(u32, [u8; 16])>);
+impl TraceCmdLineCacheSnapshot {
+    /// Create a new TraceCmdLineCacheSnapshot with the given command line entries.
+    pub fn new(cmdline: Vec<(u32, [u8; 16])>) -> Self {
+        Self(cmdline)
+    }
+
+    /// Return the first command line entry in the cache.
+    pub fn peek(&self) -> Option<&(u32, [u8; 16])> {
+        self.0.first()
+    }
+
+    /// Remove and return the first command line entry in the cache.
+    pub fn pop(&mut self) -> Option<(u32, [u8; 16])> {
+        if self.0.is_empty() {
+            None
+        } else {
+            Some(self.0.remove(0))
+        }
+    }
+}
+
+/// A parser for trace entries that formats them into human-readable strings.
 pub struct TraceEntryParser;
 
 impl TraceEntryParser {
     /// Parse the trace entry and return a formatted string.
-    pub fn parse<F: KernelTraceOps, L: RawMutex + 'static>(
-        tracepoint_map: &TracePointMap<L>,
+    pub fn parse<K: KernelTraceOps, L: RawMutex + 'static>(
+        tracepoint_map: &TracePointMap<L, K>,
         cmdline_cache: &TraceCmdLineCache,
         entry: &[u8],
     ) -> String {
@@ -201,8 +246,8 @@ impl TraceEntryParser {
         let offset = core::mem::size_of::<TraceEntry>();
         let str = fmt_func(&entry[offset..]);
 
-        let time = F::time_now();
-        let cpu_id = F::cpu_id();
+        let time = K::time_now();
+        let cpu_id = K::cpu_id();
 
         // Copy the packed field to a local variable to avoid unaligned reference
         let pid = trace_entry.pid;

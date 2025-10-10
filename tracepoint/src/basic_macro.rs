@@ -13,7 +13,7 @@
 /// - `TP_printk`: The print format for the tracepoint.
 ///
 /// # Example
-/// ```rust
+/// ```rust ignore
 /// use lock_api::Mutex;
 /// use crate::KernelTraceOps;
 /// define_event_trace!(
@@ -53,10 +53,11 @@ macro_rules! define_event_trace{
         TP_printk($fmt_expr: expr)
     ) => {
         $crate::paste!{
-            static_keys::define_static_key_false!([<__ $name _KEY>]);
+            // static_keys::define_static_key_false!([<__ $name _KEY>]);
+            static_keys::define_static_key_false_generic!([<__ $name _KEY>], $crate::KernelCodeManipulator<$kops>);
             #[allow(non_upper_case_globals)]
             #[used]
-            static [<__ $name>]: $crate::TracePoint<$lock> = $crate::TracePoint::new(&[<__ $name _KEY>],stringify!($name), stringify!($system),[<trace_fmt_ $name>], [<trace_fmt_show $name>]);
+            static [<__ $name>]: $crate::TracePoint<$lock, $kops> = $crate::TracePoint::new(&[<__ $name _KEY>],stringify!($name), stringify!($system),[<trace_fmt_ $name>], [<trace_fmt_show $name>]);
 
             #[inline(always)]
             #[allow(non_snake_case)]
@@ -88,12 +89,12 @@ macro_rules! define_event_trace{
             #[repr(C)]
             #[allow(non_snake_case,non_camel_case_types)]
             struct [<__ $name _TracePointMeta>]{
-                trace_point: &'static $crate::TracePoint<$lock>,
+                trace_point: &'static $crate::TracePoint<$lock, $kops>,
                 print_func: fn(&mut (dyn core::any::Any+Send+Sync), $($arg_type),*),
             }
 
             #[allow(non_upper_case_globals)]
-            #[link_section = ".tracepoint"]
+            #[unsafe(link_section = ".tracepoint")]
             #[used]
             static [<__ $name _meta>]: [<__ $name _TracePointMeta>] = [<__ $name _TracePointMeta>]{
                 trace_point:& [<__ $name>],
@@ -156,13 +157,13 @@ macro_rules! define_event_trace{
                 let $tp_ident = unsafe {
                     &*(buf.as_ptr() as *const Entry)
                 };
-                let fmt = format!("{}", $fmt_expr);
+                let fmt = alloc::format!("{}", $fmt_expr);
                 fmt
             }
 
             #[allow(non_snake_case)]
             pub fn [<trace_fmt_show $name>]()-> alloc::string::String {
-                let mut fmt = format!("format:
+                let mut fmt = alloc::format!("format:
 \tfield: u16 common_type; offset: 0; size: 2; signed: 0;
 \tfield: u8 common_flags; offset: 2; size: 1; signed: 0;
 \tfield: u8 common_preempt_count; offset: 3; size: 1; signed: 0;
@@ -189,10 +190,10 @@ macro_rules! define_event_trace{
 
                 $(
                     let mut offset = core::mem::offset_of!(FullEntry, entry.$entry);
-                    fmt.push_str(&format!("\tfield: {} {} offset: {}; size: {}; signed: {};\n",
+                    fmt.push_str(&alloc::format!("\tfield: {} {} offset: {}; size: {}; signed: {};\n",
                         stringify!($entry_type), stringify!($entry), offset, core::mem::size_of::<$entry_type>(), if is_signed::<$entry_type>() { 1 } else { 0 }));
                 )*
-                fmt.push_str(&format!("\nprint fmt: \"{}\"", stringify!($fmt_expr)));
+                fmt.push_str(&alloc::format!("\nprint fmt: \"{}\"", stringify!($fmt_expr)));
                 fmt
             }
         }

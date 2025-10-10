@@ -2,18 +2,26 @@ use alloc::{boxed::Box, collections::BTreeMap, format, string::String};
 use core::{any::Any, sync::atomic::AtomicU32};
 
 use lock_api::{Mutex, RawMutex};
-use static_keys::StaticFalseKey;
+use static_keys::RawStaticFalseKey;
 
+use crate::{KernelCodeManipulator, KernelTraceOps};
+
+/// A trace entry structure that holds metadata about a trace event.
 #[derive(Debug)]
 #[repr(C)]
 pub struct TraceEntry {
+    /// The type of the trace event, typically the tracepoint ID.
     pub type_: u16,
+    /// Flags associated with the trace event.
     pub flags: u8,
+    /// The preemption count at the time of the event.
     pub preempt_count: u8,
+    /// The PID of the process that generated the event.
     pub pid: i32,
 }
 
 impl TraceEntry {
+    /// Returns a formatted string representing the latency and preemption state.
     pub fn trace_print_lat_fmt(&self) -> String {
         // todo!("Implement IRQs off logic");
         let irqs_off = '.';
@@ -27,17 +35,15 @@ impl TraceEntry {
         if self.preempt_count >> 4 != 0 {
             preempt_high = ((b'0') + (self.preempt_count >> 4)) as char;
         }
-        format!(
-            "{}{}{}{}{}",
-            irqs_off, resched, hardsoft_irq, preempt_low, preempt_high
-        )
+        format!("{irqs_off}{resched}{hardsoft_irq}{preempt_low}{preempt_high}")
     }
 }
 
-pub struct TracePoint<L: RawMutex + 'static> {
+/// The TracePoint structure represents a tracepoint in the system.
+pub struct TracePoint<L: RawMutex + 'static, K: KernelTraceOps + 'static> {
     name: &'static str,
     system: &'static str,
-    key: &'static StaticFalseKey,
+    key: &'static RawStaticFalseKey<KernelCodeManipulator<K>>,
     id: AtomicU32,
     callback: Mutex<L, BTreeMap<usize, TracePointFunc>>,
     raw_callback: Mutex<L, BTreeMap<usize, Box<dyn TracePointCallBackFunc>>>,
@@ -46,7 +52,7 @@ pub struct TracePoint<L: RawMutex + 'static> {
     flags: u8,
 }
 
-impl<L: RawMutex + 'static> core::fmt::Debug for TracePoint<L> {
+impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> core::fmt::Debug for TracePoint<L, K> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TracePoint")
             .field("name", &self.name)
@@ -57,26 +63,35 @@ impl<L: RawMutex + 'static> core::fmt::Debug for TracePoint<L> {
     }
 }
 
+/// CommonTracePointMeta holds metadata for a common tracepoint.
 #[derive(Debug)]
 #[repr(C)]
-pub struct CommonTracePointMeta<L: RawMutex + 'static> {
-    pub trace_point: &'static TracePoint<L>,
+pub struct CommonTracePointMeta<L: RawMutex + 'static, K: KernelTraceOps + 'static> {
+    /// A reference to the tracepoint.
+    pub trace_point: &'static TracePoint<L, K>,
+    /// The print function for the tracepoint.
     pub print_func: fn(),
 }
 
+/// A trait for callback functions that can be registered with a tracepoint.
 pub trait TracePointCallBackFunc: Send + Sync {
+    /// Call the callback function with the given trace entry data.
     fn call(&self, entry: &[u8]);
 }
 
+/// A structure representing a registered tracepoint callback function.
 #[derive(Debug)]
 pub struct TracePointFunc {
+    /// The callback function to be executed.
     pub func: fn(),
+    /// The data associated with the callback function.
     pub data: Box<dyn Any + Send + Sync>,
 }
 
-impl<L: RawMutex + 'static> TracePoint<L> {
+impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePoint<L, K> {
+    /// Creates a new TracePoint instance.
     pub const fn new(
-        key: &'static StaticFalseKey,
+        key: &'static RawStaticFalseKey<KernelCodeManipulator<K>>,
         name: &'static str,
         system: &'static str,
         fmt_func: fn(&[u8]) -> String,

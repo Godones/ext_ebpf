@@ -79,6 +79,15 @@ for (name, tracepoint) in tracepoint_map.iter() {
 }
 ```
 
+## Examples
+See `examples/usage.rs` for a complete example of defining and using tracepoints.
+
+```
+cd examples
+cargo run --example usage
+```
+
+
 ## Architecture
 
 The crate provides several key components:

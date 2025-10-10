@@ -1,3 +1,12 @@
+//! A Rust library for defining and managing tracepoints in a no_std environment.
+//! It provides macros and structures to create tracepoints, manage their state,
+//! and handle trace events efficiently.
+//! The library is designed to be lightweight and suitable for embedded systems or
+//! kernel-level programming where the standard library is not available.
+//! It leverages Rust's powerful macro system to simplify the creation and management of tracepoints.
+//! The macros provided by this library allow for easy insertion of tracepoints into code with minimal overhead.
+//!
+#![deny(missing_docs)]
 #![no_std]
 #![allow(clippy::new_without_default)]
 extern crate alloc;
@@ -18,6 +27,7 @@ use core::{
     ops::{Deref, DerefMut},
     sync::atomic::AtomicUsize,
 };
+use static_keys::code_manipulate::CodeManipulator;
 
 use lock_api::{Mutex, MutexGuard, RawMutex};
 pub use paste::paste;
@@ -25,7 +35,8 @@ pub use point::{
     CommonTracePointMeta, TraceEntry, TracePoint, TracePointCallBackFunc, TracePointFunc,
 };
 pub use trace_pipe::{
-    TraceCmdLineCache, TraceEntryParser, TracePipeOps, TracePipeRaw, TracePipeSnapshot,
+    TraceCmdLineCache, TraceCmdLineCacheSnapshot, TraceEntryParser, TracePipeOps, TracePipeRaw,
+    TracePipeSnapshot,
 };
 
 /// KernelTraceOps trait provides kernel-level operations for tracing.
@@ -40,40 +51,59 @@ pub trait KernelTraceOps {
     fn trace_pipe_push_raw_record(buf: &[u8]);
     /// Cache the process name for a given PID.
     fn trace_cmdline_push(pid: u32);
+    /// Write data to kernel text memory.
+    fn write_kernel_text(addr: *mut core::ffi::c_void, data: &[u8]);
 }
 
-#[derive(Debug)]
-pub struct TracePointMap<L: RawMutex + 'static>(BTreeMap<u32, &'static TracePoint<L>>);
+/// A utility struct to manipulate kernel code, primarily used for ensuring
+/// that we can modify kernel code safely.
+pub struct KernelCodeManipulator<T> {
+    _marker: core::marker::PhantomData<T>,
+}
 
-impl<L: RawMutex + 'static> TracePointMap<L> {
+impl<T: KernelTraceOps> CodeManipulator for KernelCodeManipulator<T> {
+    unsafe fn write_code<const L: usize>(addr: *mut core::ffi::c_void, data: &[u8; L]) {
+        log::debug!("Modifying kernel code at address: {:p}", addr);
+        T::write_kernel_text(addr, data);
+    }
+}
+
+/// TracePointMap is a mapping from tracepoint IDs to TracePoint references.
+#[derive(Debug)]
+pub struct TracePointMap<L: RawMutex + 'static, K: KernelTraceOps + 'static>(
+    BTreeMap<u32, &'static TracePoint<L, K>>,
+);
+
+impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePointMap<L, K> {
     /// Create a new TracePointMap
     fn new() -> Self {
         Self(BTreeMap::new())
     }
 }
 
-impl<L: RawMutex + 'static> Deref for TracePointMap<L> {
-    type Target = BTreeMap<u32, &'static TracePoint<L>>;
+impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> Deref for TracePointMap<L, K> {
+    type Target = BTreeMap<u32, &'static TracePoint<L, K>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<L: RawMutex + 'static> DerefMut for TracePointMap<L> {
+impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> DerefMut for TracePointMap<L, K> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
+/// TracingEventsManager manages tracing events, subsystems, and tracepoints.
 #[derive(Debug)]
-pub struct TracingEventsManager<L: RawMutex + 'static> {
-    subsystems: Mutex<L, BTreeMap<String, Arc<EventsSubsystem<L>>>>,
-    map: Mutex<L, TracePointMap<L>>,
+pub struct TracingEventsManager<L: RawMutex + 'static, K: KernelTraceOps + 'static> {
+    subsystems: Mutex<L, BTreeMap<String, Arc<EventsSubsystem<L, K>>>>,
+    map: Mutex<L, TracePointMap<L, K>>,
 }
 
-impl<L: RawMutex + 'static> TracingEventsManager<L> {
-    fn new(map: TracePointMap<L>) -> Self {
+impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracingEventsManager<L, K> {
+    fn new(map: TracePointMap<L, K>) -> Self {
         Self {
             subsystems: Mutex::new(BTreeMap::new()),
             map: Mutex::new(map),
@@ -81,14 +111,14 @@ impl<L: RawMutex + 'static> TracingEventsManager<L> {
     }
 
     /// Get the tracepoint map
-    pub fn tracepoint_map(&self) -> MutexGuard<L, TracePointMap<L>> {
+    pub fn tracepoint_map(&self) -> MutexGuard<'_, L, TracePointMap<L, K>> {
         self.map.lock()
     }
 
     /// Create a subsystem by name
     ///
     /// If the subsystem already exists, return the existing subsystem.
-    fn create_subsystem(&self, subsystem_name: &str) -> Arc<EventsSubsystem<L>> {
+    fn create_subsystem(&self, subsystem_name: &str) -> Arc<EventsSubsystem<L, K>> {
         if self.subsystems.lock().contains_key(subsystem_name) {
             return self
                 .get_subsystem(subsystem_name)
@@ -102,33 +132,32 @@ impl<L: RawMutex + 'static> TracingEventsManager<L> {
     }
 
     /// Get the subsystem by name
-    pub fn get_subsystem(&self, subsystem_name: &str) -> Option<Arc<EventsSubsystem<L>>> {
+    pub fn get_subsystem(&self, subsystem_name: &str) -> Option<Arc<EventsSubsystem<L, K>>> {
         self.subsystems.lock().get(subsystem_name).cloned()
     }
 
     /// Remove the subsystem by name
-    pub fn remove_subsystem(&self, subsystem_name: &str) -> Option<Arc<EventsSubsystem<L>>> {
+    pub fn remove_subsystem(&self, subsystem_name: &str) -> Option<Arc<EventsSubsystem<L, K>>> {
         self.subsystems.lock().remove(subsystem_name)
     }
 
     /// Get all subsystems
     pub fn subsystem_names(&self) -> Vec<String> {
-        let res = self
-            .subsystems
+        self.subsystems
             .lock()
             .keys()
             .cloned()
-            .collect::<Vec<String>>();
-        res
+            .collect::<Vec<String>>()
     }
 }
 
+/// EventsSubsystem represents a collection of events under a specific subsystem.
 #[derive(Debug)]
-pub struct EventsSubsystem<L: RawMutex + 'static> {
-    events: Mutex<L, BTreeMap<String, Arc<EventInfo<L>>>>,
+pub struct EventsSubsystem<L: RawMutex + 'static, K: KernelTraceOps + 'static> {
+    events: Mutex<L, BTreeMap<String, Arc<EventInfo<L, K>>>>,
 }
 
-impl<L: RawMutex + 'static> EventsSubsystem<L> {
+impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> EventsSubsystem<L, K> {
     fn new() -> Self {
         Self {
             events: Mutex::new(BTreeMap::new()),
@@ -136,35 +165,36 @@ impl<L: RawMutex + 'static> EventsSubsystem<L> {
     }
 
     /// Create an event by name
-    fn create_event(&self, event_name: &str, event_info: EventInfo<L>) {
+    fn create_event(&self, event_name: &str, event_info: EventInfo<L, K>) {
         self.events
             .lock()
             .insert(event_name.to_string(), Arc::new(event_info));
     }
 
     /// Get the event by name
-    pub fn get_event(&self, event_name: &str) -> Option<Arc<EventInfo<L>>> {
+    pub fn get_event(&self, event_name: &str) -> Option<Arc<EventInfo<L, K>>> {
         self.events.lock().get(event_name).cloned()
     }
 
     /// Get all events in the subsystem
     pub fn event_names(&self) -> Vec<String> {
-        let res = self.events.lock().keys().cloned().collect::<Vec<String>>();
-        res
+        self.events.lock().keys().cloned().collect::<Vec<String>>()
     }
 }
+
+/// EventInfo holds information about a specific trace event.
 #[derive(Debug)]
-pub struct EventInfo<L: RawMutex + 'static> {
-    enable: TracePointEnableFile<L>,
-    tracepoint: &'static TracePoint<L>,
-    format: TracePointFormatFile<L>,
-    id: TracePointIdFile<L>,
+pub struct EventInfo<L: RawMutex + 'static, K: KernelTraceOps + 'static> {
+    enable: TracePointEnableFile<L, K>,
+    tracepoint: &'static TracePoint<L, K>,
+    format: TracePointFormatFile<L, K>,
+    id: TracePointIdFile<L, K>,
     // filter:,
     // trigger:,
 }
 
-impl<L: RawMutex + 'static> EventInfo<L> {
-    fn new(tracepoint: &'static TracePoint<L>) -> Self {
+impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> EventInfo<L, K> {
+    fn new(tracepoint: &'static TracePoint<L, K>) -> Self {
         let enable = TracePointEnableFile::new(tracepoint);
         let format = TracePointFormatFile::new(tracepoint);
         let id = TracePointIdFile::new(tracepoint);
@@ -177,34 +207,34 @@ impl<L: RawMutex + 'static> EventInfo<L> {
     }
 
     /// Get the tracepoint
-    pub fn tracepoint(&self) -> &'static TracePoint<L> {
+    pub fn tracepoint(&self) -> &'static TracePoint<L, K> {
         self.tracepoint
     }
 
     /// Get the enable file
-    pub fn enable_file(&self) -> &TracePointEnableFile<L> {
+    pub fn enable_file(&self) -> &TracePointEnableFile<L, K> {
         &self.enable
     }
 
     /// Get the format file
-    pub fn format_file(&self) -> &TracePointFormatFile<L> {
+    pub fn format_file(&self) -> &TracePointFormatFile<L, K> {
         &self.format
     }
 
     /// Get the ID file
-    pub fn id_file(&self) -> &TracePointIdFile<L> {
+    pub fn id_file(&self) -> &TracePointIdFile<L, K> {
         &self.id
     }
 }
 
 /// TracePointFormatFile provides a way to get the format of the tracepoint.
 #[derive(Debug, Clone)]
-pub struct TracePointFormatFile<L: RawMutex + 'static> {
-    tracepoint: &'static TracePoint<L>,
+pub struct TracePointFormatFile<L: RawMutex + 'static, K: KernelTraceOps + 'static> {
+    tracepoint: &'static TracePoint<L, K>,
 }
 
-impl<L: RawMutex + 'static> TracePointFormatFile<L> {
-    fn new(tracepoint: &'static TracePoint<L>) -> Self {
+impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePointFormatFile<L, K> {
+    fn new(tracepoint: &'static TracePoint<L, K>) -> Self {
         Self { tracepoint }
     }
 
@@ -216,13 +246,14 @@ impl<L: RawMutex + 'static> TracePointFormatFile<L> {
     }
 }
 
+/// TracePointEnableFile provides a way to enable or disable the tracepoint.
 #[derive(Debug, Clone)]
-pub struct TracePointEnableFile<L: RawMutex + 'static> {
-    tracepoint: &'static TracePoint<L>,
+pub struct TracePointEnableFile<L: RawMutex + 'static, K: KernelTraceOps + 'static> {
+    tracepoint: &'static TracePoint<L, K>,
 }
 
-impl<L: RawMutex + 'static> TracePointEnableFile<L> {
-    fn new(tracepoint: &'static TracePoint<L>) -> Self {
+impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePointEnableFile<L, K> {
+    fn new(tracepoint: &'static TracePoint<L, K>) -> Self {
         Self { tracepoint }
     }
 
@@ -242,19 +273,20 @@ impl<L: RawMutex + 'static> TracePointEnableFile<L> {
             '1' => self.tracepoint.enable(),
             '0' => self.tracepoint.disable(),
             _ => {
-                log::warn!("Invalid value for tracepoint enable: {}", enable);
+                log::warn!("Invalid value for tracepoint enable: {enable}");
             }
         }
     }
 }
 
+/// TracePointEnableFile provides a way to enable or disable the tracepoint.
 #[derive(Debug, Clone)]
-pub struct TracePointIdFile<L: RawMutex + 'static> {
-    tracepoint: &'static TracePoint<L>,
+pub struct TracePointIdFile<L: RawMutex + 'static, K: KernelTraceOps + 'static> {
+    tracepoint: &'static TracePoint<L, K>,
 }
 
-impl<L: RawMutex + 'static> TracePointIdFile<L> {
-    fn new(tracepoint: &'static TracePoint<L>) -> Self {
+impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePointIdFile<L, K> {
+    fn new(tracepoint: &'static TracePoint<L, K>) -> Self {
         Self { tracepoint }
     }
 
@@ -266,25 +298,30 @@ impl<L: RawMutex + 'static> TracePointIdFile<L> {
     }
 }
 
-extern "C" {
+unsafe extern "C" {
     fn __start_tracepoint();
     fn __stop_tracepoint();
 }
 
 /// Initialize the tracing events
-pub fn global_init_events<L: RawMutex + 'static>() -> Result<TracingEventsManager<L>, &'static str>
-{
+///
+/// The L type parameter is the lock type used for synchronizing access to the tracepoint map.
+/// The K type parameter is the kernel trace operations type used for performing kernel-level operations.
+///
+/// Returns a Result containing the initialized TracingEventsManager or an error message.
+pub fn global_init_events<L: RawMutex + 'static, K: KernelTraceOps + 'static>()
+-> Result<TracingEventsManager<L, K>, &'static str> {
     static TRACE_POINT_ID: AtomicUsize = AtomicUsize::new(0);
-    let events_manager = TracingEventsManager::new(TracePointMap::<L>::new());
-    let tracepoint_data_start = __start_tracepoint as usize as *mut CommonTracePointMeta<L>;
-    let tracepoint_data_end = __stop_tracepoint as usize as *mut CommonTracePointMeta<L>;
+    let events_manager = TracingEventsManager::new(TracePointMap::<L, K>::new());
+    let tracepoint_data_start = __start_tracepoint as usize as *mut CommonTracePointMeta<L, K>;
+    let tracepoint_data_end = __stop_tracepoint as usize as *mut CommonTracePointMeta<L, K>;
     log::info!(
         "tracepoint_data_start: {:#x}, tracepoint_data_end: {:#x}",
         tracepoint_data_start as usize,
         tracepoint_data_end as usize
     );
     let tracepoint_data_len = (tracepoint_data_end as usize - tracepoint_data_start as usize)
-        / size_of::<CommonTracePointMeta<L>>();
+        / size_of::<CommonTracePointMeta<L, K>>();
     let tracepoint_data =
         unsafe { core::slice::from_raw_parts_mut(tracepoint_data_start, tracepoint_data_len) };
     tracepoint_data.sort_by(|a, b| {
@@ -293,7 +330,7 @@ pub fn global_init_events<L: RawMutex + 'static>() -> Result<TracingEventsManage
             .cmp(b.trace_point.name())
             .then(a.trace_point.system().cmp(b.trace_point.system()))
     });
-    log::info!("tracepoint_data_len: {}", tracepoint_data_len);
+    log::info!("tracepoint_data_len: {tracepoint_data_len}");
 
     let mut tracepoint_map = events_manager.tracepoint_map();
     for tracepoint_meta in tracepoint_data {
