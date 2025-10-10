@@ -1,4 +1,4 @@
-# tracepoint
+# ktracepoint
 
 A Rust crate for implementing tracepoints in kernel. This crate provides a flexible and efficient way to add tracing capabilities to your kernel, similar to Linux kernel's tracepoint mechanism.
 
@@ -20,10 +20,10 @@ A Rust crate for implementing tracepoints in kernel. This crate provides a flexi
 
 ```rust
 use spin::Mutex;
-use tracepoint::{define_event_trace, KernelTraceOps};
+use ktracepoint::{define_event_trace, KernelTraceOps};
 // Define kernel operations
-pub static TRACE_RAW_PIPE: Mutex<tracepoint::TracePipeRaw> =
-    Mutex::new(tracepoint::TracePipeRaw::new(1024));
+pub static TRACE_RAW_PIPE: Mutex<ktracepoint::TracePipeRaw> =
+    Mutex::new(ktracepoint::TracePipeRaw::new(1024));
 
 pub struct Kops;
 
