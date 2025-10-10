@@ -1,8 +1,0 @@
-[submodule "rbpf"]
-	path = rbpf
-	url = https://github.com/Godones/rbpf.git
-	branch = dev
-[submodule "polyhal"]
-	path = polyhal
-	url = https://github.com/Godones/polyhal.git
-	branch = dev
