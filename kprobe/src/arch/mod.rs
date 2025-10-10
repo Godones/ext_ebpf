@@ -7,29 +7,31 @@ use core::{
 };
 
 use lock_api::{Mutex, RawMutex};
-#[cfg(target_arch = "loongarch64")]
-mod loongarch64;
-#[cfg(target_arch = "riscv64")]
-mod rv64;
-#[cfg(target_arch = "x86_64")]
-mod x86;
 
-#[cfg(target_arch = "loongarch64")]
-pub use loongarch64::*;
-#[cfg(target_arch = "riscv64")]
-pub use rv64::*;
-#[cfg(target_arch = "x86_64")]
-pub use x86::*;
+use crate::KretprobeInstance;
 
-use crate::kretprobe::KretprobeInstance;
+cfg_if::cfg_if! {
+    if #[cfg(target_arch = "x86_64")] {
+        mod x86;
+        pub use x86::*;
+        /// The probe point structure for the current architecture.
+        pub type KprobePoint<F> = X86KprobePoint<F>;
+    } else if #[cfg(target_arch = "riscv64")] {
+        mod rv64;
+        pub use rv64::*;
+        /// The probe point structure for the current architecture.
+        pub type KprobePoint<F> = Rv64KprobePoint<F>;
+    } else if #[cfg(target_arch = "loongarch64")] {
+        mod loongarch64;
+        pub use loongarch64::*;
+        /// The probe point structure for the current architecture.
+        pub type KprobePoint<F> = LA64KprobePoint<F>;
+    } else {
+        compile_error!("Unsupported architecture");
+    }
+}
 
-#[cfg(target_arch = "x86_64")]
-pub type KprobePoint<F> = X86KprobePoint<F>;
-#[cfg(target_arch = "riscv64")]
-pub type KprobePoint<F> = Rv64KprobePoint<F>;
-#[cfg(target_arch = "loongarch64")]
-pub type KprobePoint<F> = LA64KprobePoint<F>;
-
+/// The operations available for kprobes.
 pub trait KprobeOps: Send {
     /// The address of the instruction that program should return to
     fn return_address(&self) -> usize;
@@ -52,6 +54,7 @@ pub trait KprobeOps: Send {
     fn break_address(&self) -> usize;
 }
 
+/// The auxiliary operations required for kprobes.
 pub trait KprobeAuxiliaryOps: Send + Debug {
     /// Enable or disable write permission for the specified address.
     fn set_writeable_for_address(address: usize, len: usize, writable: bool);
@@ -65,10 +68,13 @@ pub trait KprobeAuxiliaryOps: Send + Debug {
     fn pop_kretprobe_instance_from_task() -> KretprobeInstance;
 }
 
+/// The user data associated with a probe point.
 pub trait ProbeData: Any + Send + Sync + Debug {
+    /// Get a reference to the data as a `dyn Any`.
     fn as_any(&self) -> &dyn Any;
 }
 
+/// The type of the probe handler function.
 pub type ProbeHandlerFunc = fn(&(dyn ProbeData), &mut PtRegs);
 
 #[derive(Clone, Copy, Debug)]
@@ -86,10 +92,13 @@ impl ProbeHandler {
     }
 }
 
+/// The callback function type for events.
 pub trait CallBackFunc: Send + Sync {
+    /// Call the callback function.
     fn call(&self, trap_frame: &mut PtRegs);
 }
 
+/// The builder for creating a kprobe.
 pub struct KprobeBuilder<F: KprobeAuxiliaryOps> {
     pub(crate) symbol: Option<String>,
     pub(crate) symbol_addr: usize,
@@ -105,6 +114,7 @@ pub struct KprobeBuilder<F: KprobeAuxiliaryOps> {
 }
 
 impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
+    /// Create a new kprobe builder.
     pub fn new(symbol: Option<String>, symbol_addr: usize, offset: usize, enable: bool) -> Self {
         KprobeBuilder {
             symbol,
@@ -166,6 +176,7 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
     }
 }
 
+/// The basic information of a kprobe.
 pub struct KprobeBasic<L: RawMutex + 'static> {
     symbol: Option<String>,
     symbol_addr: usize,

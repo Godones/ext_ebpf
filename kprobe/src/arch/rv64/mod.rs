@@ -10,8 +10,8 @@ use lock_api::RawMutex;
 
 use super::KprobeAuxiliaryOps;
 use crate::{
-    kretprobe::{rethook_trampoline_handler, KretprobeInstance},
     KprobeBasic, KprobeBuilder, KprobeOps,
+    kretprobe::{KretprobeInstance, rethook_trampoline_handler},
 };
 
 // const EBREAK_INST: u32 = 0x00100073; // ebreak
@@ -19,6 +19,7 @@ const C_EBREAK_INST: u32 = 0x9002; // c.ebreak
 const INSN_LENGTH_MASK: u16 = 0x3;
 const INSN_LENGTH_32: u16 = 0x3;
 
+/// The kprobe structure.
 pub struct Kprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
     basic: KprobeBasic<L>,
     point: Arc<Rv64KprobePoint<F>>,
@@ -29,6 +30,8 @@ enum OpcodeTy {
     Inst16(u16),
     Inst32(u32),
 }
+
+/// The kprobe point structure for RISC-V architecture.
 #[derive(Debug)]
 pub struct Rv64KprobePoint<F: KprobeAuxiliaryOps> {
     addr: usize,
@@ -52,6 +55,7 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> DerefMut for Kprobe<L, F> {
 }
 
 impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Kprobe<L, F> {
+    /// Get the probe point of the kprobe.
     pub fn probe_point(&self) -> &Arc<Rv64KprobePoint<F>> {
         &self.point
     }
@@ -97,6 +101,7 @@ impl<F: KprobeAuxiliaryOps> Drop for Rv64KprobePoint<F> {
 }
 
 impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
+    /// Install the kprobe and return the kprobe and its probe point.
     pub fn install<L: RawMutex + 'static>(self) -> (Kprobe<L, F>, Arc<Rv64KprobePoint<F>>) {
         let probe_point = match &self.probe_point {
             Some(point) => point.clone(),
@@ -114,11 +119,7 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
         let address = self.symbol_addr + self.offset;
         let inst_16 = unsafe { core::ptr::read(address as *const u16) };
         // See <https://elixir.bootlin.com/linux/v6.10.2/source/arch/riscv/kernel/probes/kprobes.c#L68>
-        let is_inst_16 = if (inst_16 & INSN_LENGTH_MASK) == INSN_LENGTH_32 {
-            false
-        } else {
-            true
-        };
+        let is_inst_16 = (inst_16 & INSN_LENGTH_MASK) != INSN_LENGTH_32;
 
         let inst_tmp_ptr =
             F::alloc_executable_memory(Layout::from_size_align(8, 8).unwrap()) as usize;
@@ -205,8 +206,10 @@ pub(crate) fn clear_single_step(pt_regs: &mut PtRegs, single_step_address: usize
     pt_regs.update_pc(single_step_address);
 }
 
+/// The register state for RISC-V architecture.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
 pub struct PtRegs {
     pub epc: usize,
     pub ra: usize,
@@ -261,6 +264,7 @@ impl PtRegs {
         self.epc = pc as _;
     }
 
+    /// Get the return value from the a0 register.
     pub fn ret_value(&self) -> usize {
         self.a0
     }

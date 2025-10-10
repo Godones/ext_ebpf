@@ -9,18 +9,20 @@ use lock_api::RawMutex;
 use yaxpeax_arch::LengthedInstruction;
 
 use crate::{
-    kretprobe::{rethook_trampoline_handler, KretprobeInstance},
     KprobeAuxiliaryOps, KprobeBasic, KprobeBuilder, KprobeOps,
+    kretprobe::{KretprobeInstance, rethook_trampoline_handler},
 };
 
 const EBREAK_INST: u8 = 0xcc; // x86_64: 0xcc
 const MAX_INSTRUCTION_SIZE: usize = 15; // x86_64 max instruction length
 
+/// The x86_64 implementation of Kprobe.
 pub struct Kprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
     basic: KprobeBasic<L>,
     point: Arc<X86KprobePoint<F>>,
 }
 
+/// The probe point for x86_64 architecture.
 #[derive(Debug)]
 pub struct X86KprobePoint<F: KprobeAuxiliaryOps> {
     addr: usize,
@@ -111,7 +113,7 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
 
         let decoder = yaxpeax_x86::amd64::InstDecoder::default();
         let buf = unsafe { core::slice::from_raw_parts(inst_tmp, MAX_INSTRUCTION_SIZE) };
-        let inst = decoder.decode_slice(&buf).unwrap();
+        let inst = decoder.decode_slice(buf).unwrap();
         let len = inst.len().to_const();
         log::trace!("inst: {:?}, len: {:?}", inst.to_string(), len);
 
@@ -139,6 +141,7 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
 }
 
 impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Kprobe<L, F> {
+    /// Get the probe point associated with this kprobe.
     pub fn probe_point(&self) -> &Arc<X86KprobePoint<F>> {
         &self.point
     }
@@ -175,8 +178,10 @@ pub(crate) fn clear_single_step(pt_regs: &mut PtRegs, single_step_address: usize
     pt_regs.set_single_step(false);
 }
 
+/// The CPU register state for x86_64 architecture.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
 pub struct PtRegs {
     pub r15: usize,
     pub r14: usize,
@@ -205,11 +210,11 @@ pub struct PtRegs {
 
 impl PtRegs {
     pub(crate) fn break_address(&self) -> usize {
-        (self.rip - 1) as usize // The breakpoint instruction is at the address of rip - 1
+        self.rip - 1 // The breakpoint instruction is at the address of rip - 1
     }
 
     pub(crate) fn debug_address(&self) -> usize {
-        self.rip as usize // The debug address is the current instruction pointer
+        self.rip // The debug address is the current instruction pointer
     }
 
     pub(crate) fn update_pc(&mut self, pc: usize) {
@@ -228,11 +233,11 @@ impl PtRegs {
         self.rsp
     }
 
+    /// Get the return value from the rax register.
     pub fn ret_value(&self) -> usize {
         self.rax
     }
 }
-
 
 #[unsafe(naked)]
 pub(crate) unsafe extern "C" fn arch_rethook_trampoline<
@@ -321,7 +326,7 @@ pub(crate) fn arch_rethook_fixup_return(pt_regs: &mut PtRegs, correct_ret_addr: 
     let pt_regs_pointer = unsafe { (pt_regs as *mut PtRegs).add(1) as *mut usize };
     unsafe {
         // Replace fake return address with real one.
-        *pt_regs_pointer = correct_ret_addr as usize;
+        *pt_regs_pointer = correct_ret_addr;
     }
 }
 

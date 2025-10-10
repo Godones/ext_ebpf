@@ -11,7 +11,14 @@ pub struct KprobeManager<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
     debug_list: BTreeMap<usize, Vec<Probe<L, F>>>,
 }
 
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Default for KprobeManager<L, F> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> KprobeManager<L, F> {
+    /// Create a new kprobe manager.
     pub const fn new() -> Self {
         KprobeManager {
             break_list: BTreeMap::new(),
@@ -89,14 +96,14 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> KprobeManager<L, F> {
             list.retain(|x| match x {
                 Probe::Kprobe(kprobe) => {
                     match probe {
-                        Probe::Kprobe(kprobe2) => !Arc::ptr_eq(kprobe, &kprobe2),
+                        Probe::Kprobe(kprobe2) => !Arc::ptr_eq(kprobe, kprobe2),
                         Probe::Kretprobe(_) => true, // Kretprobe should not match Kprobe
                     }
                 }
                 Probe::Kretprobe(kretprobe) => {
                     match probe {
                         Probe::Kprobe(_) => true, // Kprobe should not match Kretprobe
-                        Probe::Kretprobe(kretprobe2) => !Arc::ptr_eq(kretprobe, &kretprobe2),
+                        Probe::Kretprobe(kretprobe2) => !Arc::ptr_eq(kretprobe, kretprobe2),
                     }
                 }
             });
@@ -112,14 +119,14 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> KprobeManager<L, F> {
             list.retain(|x| match x {
                 Probe::Kprobe(kprobe) => {
                     match &probe {
-                        Probe::Kprobe(kprobe2) => !Arc::ptr_eq(kprobe, &kprobe2),
+                        Probe::Kprobe(kprobe2) => !Arc::ptr_eq(kprobe, kprobe2),
                         Probe::Kretprobe(_) => true, // Kretprobe should not match Kprobe
                     }
                 }
                 Probe::Kretprobe(kretprobe) => {
                     match &probe {
                         Probe::Kprobe(_) => true, // Kprobe should not match Kretprobe
-                        Probe::Kretprobe(kretprobe2) => !Arc::ptr_eq(kretprobe, &kretprobe2),
+                        Probe::Kretprobe(kretprobe2) => !Arc::ptr_eq(kretprobe, kretprobe2),
                     }
                 }
             });

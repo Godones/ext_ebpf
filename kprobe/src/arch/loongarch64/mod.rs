@@ -9,18 +9,20 @@ use lock_api::RawMutex;
 
 use super::KprobeAuxiliaryOps;
 use crate::{
-    kretprobe::{rethook_trampoline_handler, KretprobeInstance},
     KprobeBasic, KprobeBuilder, KprobeOps,
+    kretprobe::{KretprobeInstance, rethook_trampoline_handler},
 };
 // const BRK_KPROBE_BP: u64 = 10;
 // const BRK_KPROBE_SSTEPBP: u64 = 11;
 const EBREAK_INST: u32 = 0x002a0000;
 
+/// The kprobe structure.
 pub struct Kprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
     basic: KprobeBasic<L>,
     point: Arc<LA64KprobePoint<F>>,
 }
 
+/// The kprobe point structure for LoongArch64 architecture.
 #[derive(Debug)]
 pub struct LA64KprobePoint<F: KprobeAuxiliaryOps> {
     addr: usize,
@@ -43,6 +45,7 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> DerefMut for Kprobe<L, F> {
 }
 
 impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Kprobe<L, F> {
+    /// Get the probe point of the kprobe.
     pub fn probe_point(&self) -> &Arc<LA64KprobePoint<F>> {
         &self.point
     }
@@ -70,15 +73,12 @@ impl<F: KprobeAuxiliaryOps> Drop for LA64KprobePoint<F> {
         // Deallocate the executable memory
         let layout = Layout::from_size_align(8, 8).unwrap();
         F::dealloc_executable_memory(inst_tmp_ptr as *mut u8, layout);
-        log::trace!(
-            "Kprobe::uninstall: address: {:#x}, old_instruction: {:?}",
-            address,
-            inst_32
-        );
+        log::trace!("Kprobe::uninstall: address: {address:#x}, old_instruction: {inst_32:?}");
     }
 }
 
 impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
+    /// Install the kprobe by replacing the instruction at the specified address with a breakpoint instruction.
     pub fn install<L: RawMutex + 'static>(self) -> (Kprobe<L, F>, Arc<LA64KprobePoint<F>>) {
         let probe_point = match &self.probe_point {
             Some(point) => point.clone(),
@@ -140,10 +140,11 @@ impl<F: KprobeAuxiliaryOps> KprobeOps for LA64KprobePoint<F> {
         self.addr
     }
 }
-
+/// The register state at the time of the probe.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 #[repr(align(8))]
+#[allow(missing_docs)]
 pub struct PtRegs {
     pub regs: [usize; 32],
     pub orig_a0: usize,
@@ -169,6 +170,7 @@ impl PtRegs {
         self.csr_era = pc;
     }
 
+    /// Get the return value from the registers.
     pub fn ret_value(&self) -> usize {
         self.regs[4]
     }

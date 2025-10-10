@@ -10,10 +10,11 @@ use core::{any::Any, fmt::Debug, sync::atomic::AtomicU64};
 use lock_api::{Mutex, RawMutex};
 
 use crate::{
-    arch_rethook_fixup_return, arch_rethook_prepare, CallBackFunc, Kprobe, KprobeAuxiliaryOps,
-    KprobeBuilder, ProbeData, ProbeHandler, ProbeHandlerFunc, PtRegs,
+    CallBackFunc, Kprobe, KprobeAuxiliaryOps, KprobeBuilder, ProbeData, ProbeHandler,
+    ProbeHandlerFunc, PtRegs, arch_rethook_fixup_return, arch_rethook_prepare,
 };
 
+/// The kretprobe structure.
 pub struct Kretprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
     kprobe: Kprobe<L, F>,
     nmissed: AtomicU64,
@@ -48,7 +49,7 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Kretprobe<L, F> {
             ret_handler,
         }
     }
-
+    /// Get the underlying kprobe of the kretprobe.
     pub fn kprobe(&self) -> &Kprobe<L, F> {
         &self.kprobe
     }
@@ -87,6 +88,7 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps + 'static> ProbeData for Kretp
     }
 }
 
+/// The instance of a kretprobe.
 #[derive(Debug)]
 pub struct KretprobeInstance {
     pub(crate) ret_addr: usize,
@@ -95,6 +97,7 @@ pub struct KretprobeInstance {
     kretprobe: Weak<dyn Any + Send + Sync>,
 }
 
+/// The builder for creating a kretprobe.
 pub struct KretprobeBuilder<L: RawMutex + 'static> {
     symbol: Option<String>,
     symbol_addr: usize,
@@ -107,6 +110,7 @@ pub struct KretprobeBuilder<L: RawMutex + 'static> {
 }
 
 impl<L: RawMutex + 'static> KretprobeBuilder<L> {
+    /// Create a new kretprobe builder.
     pub fn new(symbol: Option<String>, symbol_addr: usize, maxactive: u32) -> Self {
         KretprobeBuilder {
             symbol,
