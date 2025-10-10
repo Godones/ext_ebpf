@@ -1,8 +1,8 @@
 [package]
 name = "kprobe"
-authors.workspace = true
 version.workspace = true
-edition = "2024"
+edition.workspace = true
+authors.workspace = true
 
 [dependencies]
 log = "0.4.21"

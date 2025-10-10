@@ -1,27 +1,14 @@
 [workspace]
-
-members = [
-	"bpf-basic",
-	"kprobe",
-	"tracepoint",
-	"ksym",
-	"unikernel/*",
-]
-exclude = ["polyhal"]
-
+members = ["bpf-basic", "kprobe", "tracepoint", "ksym", "unikernel/*"]
 resolver = "2"
-
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Linfeng Chen <chenlinfeng25@outlook.com>"]
 keywords = ["kprobe", "tracepoint", "kernel"]
 categories = ["os", "no-std"]
 
 [workspace.dependencies]
-lazyinit = "0.2"
-# aya-obj = { path = "../aya/aya-obj" }
-# aya = { path = "../aya/aya", default-features = false }
 aya-obj = { git = "https://github.com/Godones/aya.git", branch = "dev" }
 aya = { git = "https://github.com/Godones/aya.git", branch = "dev", default-features = false }
