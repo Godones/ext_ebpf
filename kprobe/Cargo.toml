@@ -3,6 +3,10 @@ name = "kprobe"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license-file.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "A Rust crate for implementing kernel probes (kprobes) in operating systems."
 
 [dependencies]
 log = "0.4.21"
