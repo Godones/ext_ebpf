@@ -4,7 +4,7 @@
 #[cfg(feature = "assembly")]
 mod assembly;
 use alloc::{
-    string::{String, ToString},
+    string::{String},
     vec::Vec,
 };
 
@@ -35,21 +35,22 @@ pub fn init_kernel_symbols(ksym: &str) {
 
 /// Return the function information according to the pc address.
 /// If not found, return None.
-pub fn lookup_kallsyms(addr: usize) -> Option<(String, usize)> {
+pub fn lookup_kallsyms<'a>(addr: usize) -> Option<(&'a str, usize)> {
     let mut index = usize::MAX;
     let ksym = KSYM.get().unwrap();
     let sym_num = ksym.len();
     for i in 0..sym_num - 1 {
-        if addr > ksym[i].1 && addr <= ksym[i + 1].1 {
+        if addr >= ksym[i].1 && addr < ksym[i + 1].1 {
             index = i;
             break;
         }
     }
     if index < sym_num {
         let sym_name = ksym[index].0.as_str();
-        Some((sym_name.to_string(), ksym[index].1));
+        Some((sym_name, ksym[index].1))
+    } else {
+        None
     }
-    None
 }
 
 /// Get the address of the symbol.

@@ -50,7 +50,6 @@ fn read_map() -> Vec<KernelSymbolEntry> {
 fn generate_result(symbol_table: &[KernelSymbolEntry]) {
     // Generate ksyms_address
     // like /proc/kallsyms
-    eprintln!("Generating kernel symbols: {} entries", symbol_table.len());
     for entry in symbol_table {
         print!("{:016x} T {}\n", entry.vaddr, entry.symbol);
     }
