@@ -1,5 +1,6 @@
 use alloc::{
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
 use core::{ffi::CStr, fmt::Debug};
@@ -65,7 +66,13 @@ impl BpfProgMeta {
             assert_eq!(u.insn_cnt, 0);
             Vec::new()
         } else {
-            F::transmute_buf(u.insns as *mut u8, u.insn_cnt as usize * 8)?.to_vec()
+            let mut insns_buf = vec![0u8; u.insn_cnt as usize * 8];
+            F::copy_from_user(
+                u.insns as *const u8,
+                u.insn_cnt as usize * 8,
+                &mut insns_buf,
+            )?;
+            insns_buf
         };
         Ok(Self {
             prog_flags: u.prog_flags,

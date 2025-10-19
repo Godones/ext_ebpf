@@ -27,13 +27,13 @@ use core::{
     ops::{Deref, DerefMut},
     sync::atomic::AtomicUsize,
 };
-use static_keys::code_manipulate::CodeManipulator;
 
 use lock_api::{Mutex, MutexGuard, RawMutex};
 pub use paste::paste;
 pub use point::{
     CommonTracePointMeta, TraceEntry, TracePoint, TracePointCallBackFunc, TracePointFunc,
 };
+use static_keys::code_manipulate::CodeManipulator;
 pub use trace_pipe::{
     TraceCmdLineCache, TraceCmdLineCacheSnapshot, TraceEntryParser, TracePipeOps, TracePipeRaw,
     TracePipeSnapshot,

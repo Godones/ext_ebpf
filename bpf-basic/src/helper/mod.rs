@@ -33,7 +33,7 @@ use printf_compat::{format, output};
 
 /// Printf according to the format string, function will return the number of bytes written(including '\0')
 pub unsafe extern "C" fn printf(w: &mut impl Write, str: *const c_char, mut args: ...) -> c_int {
-    let bytes_written = format(str as _, args.as_va_list(), output::fmt_write(w));
+    let bytes_written = unsafe { format(str as _, args.as_va_list(), output::fmt_write(w)) };
     bytes_written + 1
 }
 
@@ -142,7 +142,7 @@ pub unsafe fn raw_map_lookup_elem<F: KernelAuxiliaryOps>(
     let res = F::get_unified_map_from_ptr(map as *const u8, |unified_map| {
         let meta = unified_map.map_meta();
         let key_size = meta.key_size as usize;
-        let key = core::slice::from_raw_parts(key as *const u8, key_size);
+        let key = unsafe { core::slice::from_raw_parts(key as *const u8, key_size) };
         let value = map_lookup_elem(unified_map, key)?;
         // log::info!("<raw_map_lookup_elem>: {:x?}", value);
         Ok(value)
@@ -175,7 +175,7 @@ pub unsafe fn raw_perf_event_output<F: KernelAuxiliaryOps>(
 ) -> i64 {
     // log::info!("<raw_perf_event_output>: {:x?}", data);
     let res = F::get_unified_map_from_ptr(map as *const u8, |unified_map| {
-        let data = core::slice::from_raw_parts(data as *const u8, size as usize);
+        let data = unsafe { core::slice::from_raw_parts(data as *const u8, size as usize) };
         perf_event_output::<F>(ctx, unified_map, flags, data)
     });
 
@@ -248,8 +248,8 @@ pub unsafe fn raw_map_update_elem<F: KernelAuxiliaryOps>(
         let key_size = meta.key_size as usize;
         let value_size = meta.value_size as usize;
         // log::info!("<raw_map_update_elem>: flags: {:x?}", flags);
-        let key = core::slice::from_raw_parts(key as *const u8, key_size);
-        let value = core::slice::from_raw_parts(value as *const u8, value_size);
+        let key = unsafe { core::slice::from_raw_parts(key as *const u8, key_size) };
+        let value = unsafe { core::slice::from_raw_parts(value as *const u8, value_size) };
         map_update_elem(unified_map, key, value, flags)
     });
     match res {
@@ -280,7 +280,7 @@ pub unsafe fn raw_map_delete_elem<F: KernelAuxiliaryOps>(
     let res = F::get_unified_map_from_ptr(map as *const u8, |unified_map| {
         let meta = unified_map.map_meta();
         let key_size = meta.key_size as usize;
-        let key = core::slice::from_raw_parts(key as *const u8, key_size);
+        let key = unsafe { core::slice::from_raw_parts(key as *const u8, key_size) };
         map_delete_elem(unified_map, key)
     });
     match res {
@@ -319,7 +319,7 @@ pub unsafe fn raw_map_for_each_elem<F: KernelAuxiliaryOps>(
     flags: u64,
 ) -> i64 {
     let res = F::get_unified_map_from_ptr(map as *const u8, |unified_map| {
-        let cb = *core::mem::transmute::<*const c_void, *const BpfCallBackFn>(cb);
+        let cb = unsafe { *core::mem::transmute::<*const c_void, *const BpfCallBackFn>(cb) };
         map_for_each_elem(unified_map, cb, ctx as _, flags)
     });
     match res {
@@ -351,7 +351,7 @@ pub unsafe fn raw_map_lookup_percpu_elem<F: KernelAuxiliaryOps>(
     let res = F::get_unified_map_from_ptr(map as *const u8, |unified_map| {
         let meta = unified_map.map_meta();
         let key_size = meta.key_size as usize;
-        let key = core::slice::from_raw_parts(key as *const u8, key_size);
+        let key = unsafe { core::slice::from_raw_parts(key as *const u8, key_size) };
         map_lookup_percpu_elem(unified_map, key, cpu)
     });
     match res {
@@ -384,7 +384,7 @@ pub unsafe fn raw_map_push_elem<F: KernelAuxiliaryOps>(
     let res = F::get_unified_map_from_ptr(map as *const u8, |unified_map| {
         let meta = unified_map.map_meta();
         let value_size = meta.value_size as usize;
-        let value = core::slice::from_raw_parts(value as *const u8, value_size);
+        let value = unsafe { core::slice::from_raw_parts(value as *const u8, value_size) };
         map_push_elem(unified_map, value, flags)
     });
     match res {
@@ -407,7 +407,7 @@ pub unsafe fn raw_map_pop_elem<F: KernelAuxiliaryOps>(map: *mut c_void, value: *
     let res = F::get_unified_map_from_ptr(map as *const u8, |unified_map| {
         let meta = unified_map.map_meta();
         let value_size = meta.value_size as usize;
-        let value = core::slice::from_raw_parts_mut(value as *mut u8, value_size);
+        let value = unsafe { core::slice::from_raw_parts_mut(value as *mut u8, value_size) };
         map_pop_elem(unified_map, value)
     });
     match res {
@@ -433,7 +433,7 @@ pub unsafe fn raw_map_peek_elem<F: KernelAuxiliaryOps>(
     let res = F::get_unified_map_from_ptr(map as *const u8, |unified_map| {
         let meta = unified_map.map_meta();
         let value_size = meta.value_size as usize;
-        let value = core::slice::from_raw_parts_mut(value as *mut u8, value_size);
+        let value = unsafe { core::slice::from_raw_parts_mut(value as *mut u8, value_size) };
         map_peek_elem(unified_map, value)
     });
     match res {
@@ -476,7 +476,7 @@ unsafe fn raw_probe_read_user_str<F: KernelAuxiliaryOps>(
     //     size,
     //     unsafe_ptr as usize
     // );
-    let dst = core::slice::from_raw_parts_mut(dst as *mut u8, size as usize);
+    let dst = unsafe { core::slice::from_raw_parts_mut(dst as *mut u8, size as usize) };
     let res = probe_read_user_str::<F>(dst, unsafe_ptr as *const u8);
     // log::info!("<raw_probe_read_user_str>: res: {:?}", res);
     match res {
@@ -572,12 +572,16 @@ mod tests {
             Err(BpfError::NotSupported)
         }
 
-        fn transmute_buf(_ptr: *const u8, _size: usize) -> Result<&'static [u8]> {
-            Err(BpfError::NotSupported)
+        fn copy_from_user(src: *const u8, size: usize, dst: &mut [u8]) -> Result<()> {
+            let src = unsafe { core::slice::from_raw_parts(src, size) };
+            dst[..size].copy_from_slice(src);
+            Ok(())
         }
 
-        fn transmute_buf_mut(_ptr: *mut u8, _size: usize) -> Result<&'static mut [u8]> {
-            Err(BpfError::NotSupported)
+        fn copy_to_user(dest: *mut u8, size: usize, src: &[u8]) -> Result<()> {
+            let dest = unsafe { core::slice::from_raw_parts_mut(dest, size) };
+            dest.copy_from_slice(src);
+            Ok(())
         }
 
         fn current_cpu_id() -> u32 {

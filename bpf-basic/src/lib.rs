@@ -49,10 +49,10 @@ pub trait KernelAuxiliaryOps {
         F: FnOnce(&mut UnifiedMap) -> Result<R>;
     /// Get a unified map pointer from a file descriptor.
     fn get_unified_map_ptr_from_fd(map_fd: u32) -> Result<*const u8>;
-    /// Transmute a pointer to a buffer of bytes into a slice.
-    fn transmute_buf(ptr: *const u8, size: usize) -> Result<&'static [u8]>;
-    /// Transmute a mutable pointer to a buffer of bytes into a mutable slice.
-    fn transmute_buf_mut(ptr: *mut u8, size: usize) -> Result<&'static mut [u8]>;
+    /// Copy data from a user space pointer to a kernel space buffer.
+    fn copy_from_user(src: *const u8, size: usize, dst: &mut [u8]) -> Result<()>;
+    /// Copy data from a kernel space buffer to a user space pointer.
+    fn copy_to_user(dest: *mut u8, size: usize, src: &[u8]) -> Result<()>;
     /// Get the current CPU ID.
     fn current_cpu_id() -> u32;
     /// Output some data to a perf buf

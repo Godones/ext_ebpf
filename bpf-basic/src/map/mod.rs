@@ -5,6 +5,7 @@ mod queue;
 use alloc::{
     boxed::Box,
     string::{String, ToString},
+    vec,
 };
 use core::{ffi::CStr, fmt::Debug, ops::Range};
 
@@ -264,20 +265,19 @@ pub struct BpfMapUpdateArg {
     pub flags: u64,
 }
 
-impl TryFrom<&bpf_attr> for BpfMapUpdateArg {
-    type Error = BpfError;
-    fn try_from(attr: &bpf_attr) -> Result<Self> {
+impl From<&bpf_attr> for BpfMapUpdateArg {
+    fn from(attr: &bpf_attr) -> Self {
         let u = unsafe { &attr.__bindgen_anon_2 };
         let map_fd = u.map_fd;
         let key = u.key;
         let value = unsafe { u.__bindgen_anon_1.value };
         let flags = u.flags;
-        Ok(BpfMapUpdateArg {
+        BpfMapUpdateArg {
             map_fd,
             key,
             value,
             flags,
-        })
+        }
     }
 }
 
@@ -288,16 +288,15 @@ pub struct BpfMapGetNextKeyArg {
     pub next_key: u64,
 }
 
-impl TryFrom<&bpf_attr> for BpfMapGetNextKeyArg {
-    type Error = BpfError;
-    fn try_from(attr: &bpf_attr) -> Result<Self> {
+impl From<&bpf_attr> for BpfMapGetNextKeyArg {
+    fn from(attr: &bpf_attr) -> Self {
         unsafe {
             let u = &attr.__bindgen_anon_2;
-            Ok(BpfMapGetNextKeyArg {
+            BpfMapGetNextKeyArg {
                 map_fd: u.map_fd,
                 key: if u.key != 0 { Some(u.key) } else { None },
                 next_key: u.__bindgen_anon_1.next_key,
-            })
+            }
         }
     }
 }
@@ -311,15 +310,17 @@ pub fn bpf_map_update_elem<F: KernelAuxiliaryOps>(arg: BpfMapUpdateArg) -> Resul
         let meta = unified_map.map_meta();
         let key_size = meta.key_size as usize;
         let value_size = meta.value_size as usize;
-        let key = F::transmute_buf(arg.key as *const u8, key_size)?;
-        let value = F::transmute_buf_mut(arg.value as *mut u8, value_size)?;
-        unified_map.map_mut().update_elem(key, value, arg.flags)
+        let mut key = vec![0u8; key_size];
+        let mut value = vec![0u8; value_size];
+        F::copy_from_user(arg.key as *const u8, key_size, &mut key)?;
+        F::copy_from_user(arg.value as *const u8, value_size, &mut value)?;
+        unified_map.map_mut().update_elem(&key, &value, arg.flags)
     });
     log::info!("bpf_map_update_elem ok");
     res
 }
 
-pub fn bpf_map_freeze<F: KernelAuxiliaryOps>(map_fd:u32) -> Result<()> {
+pub fn bpf_map_freeze<F: KernelAuxiliaryOps>(map_fd: u32) -> Result<()> {
     log::info!("<bpf_map_freeze>: map_fd: {:}", map_fd);
     F::get_unified_map_from_fd(map_fd, |unified_map| unified_map.map().freeze())
 }
@@ -333,12 +334,12 @@ pub fn bpf_lookup_elem<F: KernelAuxiliaryOps>(arg: BpfMapUpdateArg) -> Result<()
         let meta = unified_map.map_meta();
         let key_size = meta.key_size as usize;
         let value_size = meta.value_size as usize;
-        let key = F::transmute_buf(arg.key as *const u8, key_size)?;
-        let value = F::transmute_buf_mut(arg.value as *mut u8, value_size)?;
+        let mut key = vec![0u8; key_size];
+        F::copy_from_user(arg.key as *const u8, key_size, &mut key)?;
         let map = unified_map.map_mut();
-        let r_value = map.lookup_elem(key)?;
+        let r_value = map.lookup_elem(&key)?;
         if let Some(r_value) = r_value {
-            value.copy_from_slice(r_value[..value_size].as_ref());
+            F::copy_to_user(arg.value as *mut u8, value_size, r_value)?;
             Ok(())
         } else {
             Err(BpfError::NotFound)
@@ -358,14 +359,15 @@ pub fn bpf_map_get_next_key<F: KernelAuxiliaryOps>(arg: BpfMapGetNextKeyArg) -> 
         let meta = unified_map.map_meta();
         let key_size = meta.key_size as usize;
         let map = unified_map.map_mut();
-        let next_key = F::transmute_buf_mut(arg.next_key as *mut u8, key_size)?;
+        let mut next_key = vec![0u8; key_size];
         if let Some(key_ptr) = arg.key {
-            let key = F::transmute_buf(key_ptr as *const u8, key_size)?;
-            map.get_next_key(Some(key), next_key)?;
+            let mut key = vec![0u8; key_size];
+            F::copy_from_user(key_ptr as *const u8, key_size, &mut key)?;
+            map.get_next_key(Some(&key), &mut next_key)?;
         } else {
-            map.get_next_key(None, next_key)?;
+            map.get_next_key(None, &mut next_key)?;
         };
-        // info!("next_key: {:?}", next_key);
+        F::copy_to_user(arg.next_key as *mut u8, key_size, &next_key)?;
         Ok(())
     })
 }
@@ -383,8 +385,9 @@ pub fn bpf_map_delete_elem<F: KernelAuxiliaryOps>(arg: BpfMapUpdateArg) -> Resul
     F::get_unified_map_from_fd(arg.map_fd, |unified_map| {
         let meta = unified_map.map_meta();
         let key_size = meta.key_size as usize;
-        let key = F::transmute_buf(arg.key as *const u8, key_size)?;
-        unified_map.map_mut().delete_elem(key)
+        let mut key = vec![0u8; key_size];
+        F::copy_from_user(arg.key as *const u8, key_size, &mut key)?;
+        unified_map.map_mut().delete_elem(&key)
     })
 }
 
@@ -424,9 +427,14 @@ pub fn bpf_map_lookup_and_delete_elem<F: KernelAuxiliaryOps>(arg: BpfMapUpdateAr
         let meta = unified_map.map_meta();
         let key_size = meta.key_size as usize;
         let value_size = meta.value_size as usize;
-        let key = F::transmute_buf(arg.key as *const u8, key_size)?;
-        let value = F::transmute_buf_mut(arg.value as *mut u8, value_size)?;
-        unified_map.map_mut().lookup_and_delete_elem(key, value)
+        let mut key = vec![0u8; key_size];
+        let mut value = vec![0u8; value_size];
+        F::copy_from_user(arg.key as *const u8, key_size, &mut key)?;
+        unified_map
+            .map_mut()
+            .lookup_and_delete_elem(&key, &mut value)?;
+        F::copy_to_user(arg.value as *mut u8, value_size, &value)?;
+        Ok(())
     })
 }
 
@@ -466,8 +474,8 @@ mod tests {
 
         unsafe fn force_get_mut(&self, cpu: u32) -> &mut T {
             let ptr = self.0.as_ptr();
-            let ptr = ptr.add(cpu as usize) as *mut T;
-            &mut *ptr
+            let ptr = unsafe { ptr.add(cpu as usize) } as *mut T;
+            unsafe { &mut *ptr }
         }
     }
 

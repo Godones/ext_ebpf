@@ -195,6 +195,7 @@ impl RingPage {
     pub fn as_slice(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.ptr as *const u8, self.size) }
     }
+
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { core::slice::from_raw_parts_mut(self.ptr as *mut u8, self.size) }
     }
@@ -235,8 +236,12 @@ impl BpfPerfEvent {
     }
 
     /// Write a perf event to the mmap page.
+    /// Only when the perf event is enabled, the event will be written.
     pub fn write_event(&mut self, data: &[u8]) -> Result<()> {
-        self.data.mmap_page.write_event(data)
+        if self.data.enabled {
+            self.data.mmap_page.write_event(data);
+        }
+        Ok(())
     }
 
     /// Enable the perf event
@@ -249,6 +254,11 @@ impl BpfPerfEvent {
     pub fn disable(&mut self) -> Result<()> {
         self.data.enabled = false;
         Ok(())
+    }
+
+    /// Whether the perf event is enabled
+    pub fn enabled(&self) -> bool {
+        self.data.enabled
     }
 
     /// Whether the perf event is readable

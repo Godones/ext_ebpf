@@ -54,7 +54,9 @@ impl EBPFPreProcessor {
                         let map_ptr = F::get_unified_map_ptr_from_fd(map_fd as u32)? as usize;
                         log::info!(
                             "Relocate for BPF_PSEUDO_MAP_FD, instruction index: {}, map_fd: {}, ptr: {:#x}",
-                            index, map_fd, map_ptr
+                            index,
+                            map_fd,
+                            map_ptr
                         );
                         raw_file_ptr.push(map_ptr);
                         Some(map_ptr)

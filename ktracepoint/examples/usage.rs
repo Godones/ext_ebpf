@@ -1,14 +1,14 @@
-use spin::Mutex;
 use ktracepoint::{
-    global_init_events, TraceCmdLineCache, TraceEntryParser, TracePipeOps, TracePointMap,
+    TraceCmdLineCache, TraceEntryParser, TracePipeOps, TracePointMap, global_init_events,
 };
+use spin::Mutex;
 extern crate alloc;
 
 mod tracepoint_test {
     use std::{ops::Deref, sync::Arc, time};
 
+    use ktracepoint::{KernelTraceOps, TraceCmdLineCache, define_event_trace};
     use spin::Mutex;
-    use ktracepoint::{define_event_trace, KernelTraceOps, TraceCmdLineCache};
 
     pub static TRACE_RAW_PIPE: Mutex<ktracepoint::TracePipeRaw> =
         Mutex::new(ktracepoint::TracePipeRaw::new(1024));

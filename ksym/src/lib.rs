@@ -3,10 +3,7 @@
 
 #[cfg(feature = "assembly")]
 mod assembly;
-use alloc::{
-    string::{String},
-    vec::Vec,
-};
+use alloc::{string::String, vec::Vec};
 
 #[cfg(feature = "assembly")]
 pub use assembly::init_kernel_symbols;
