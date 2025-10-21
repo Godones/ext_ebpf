@@ -7,6 +7,12 @@ extern crate alloc;
 pub const TOKEN_MARKER: u8 = 0xFF;
 /// Length bytes for compressed symbol
 pub(crate) const LENGTH_BYTES: usize = 2;
+
+pub const KSYM_NAME_LEN: usize = 1024;
+/// Length bytes for symbol type
+const TY_LEN: usize = 1;
+
+const PREFIX_LEN: usize = LENGTH_BYTES + TY_LEN;
 /// Mapped kallsyms structure from binary blob
 pub struct KallsymsMapped<'a> {
     token_table: &'a [u8],
@@ -134,80 +140,90 @@ impl<'a> KallsymsMapped<'a> {
     /// Each line: 16-digit hex address + type + name.
     pub fn dump_all_symbols(&self) -> String {
         let mut out = String::new();
+        let mut name_buf = [0u8; KSYM_NAME_LEN];
+
         for i in 0..self.kallsyms_num_syms {
             let addr = self.kallsyms_addresses[i];
             let start = self.kallsyms_offsets[i] as usize;
-            let end = Self::read_compressed_len(&self.kallsyms_names[start..]) as usize
-                + start
-                + LENGTH_BYTES;
-            let (name, ty) = self.expand_symbol(&self.kallsyms_names[start + LENGTH_BYTES..end]);
+            let (len, ty) = Self::read_compressed_len_and_type(&self.kallsyms_names[start..]);
+            let end = start + PREFIX_LEN + len as usize;
+            let name =
+                self.expand_symbol(&self.kallsyms_names[start + PREFIX_LEN..end], &mut name_buf);
             use core::fmt::Write as _;
-            let _ = write!(out, "{:016x} {} {}\n", addr, ty as char, name);
+            let _ = writeln!(out, "{:016x} {} {}", addr, ty as char, name);
         }
         out
     }
 
-    /// Expand symbol from compressed bytes
-    pub fn expand_symbol(&self, bytes: &[u8]) -> (String, char) {
+    /// Expand a compressed symbol data into the resulting uncompressed string,
+    /// if uncompressed string is too long (>= maxlen), it will be truncated,
+    /// given the offset to where the symbol is in the compressed stream.
+    pub fn expand_symbol<'b>(
+        &self,
+        bytes: &[u8],
+        name_buf: &'b mut [u8; KSYM_NAME_LEN],
+    ) -> &'b str {
         let mut i = 0;
-        let mut name = String::new();
-
-        while i < bytes.len() {
-            if bytes[i] == TOKEN_MARKER {
-                // Try to parse 0xFF <id> 0xFF (1-byte) or 0xFF <id_hi> <id_lo> 0xFF (2-byte)
-                if i + 2 < bytes.len() && bytes[i + 2] == TOKEN_MARKER {
-                    let id = bytes[i + 1] as u16;
-                    if (id as usize) < self.token_index.len() {
-                        let start = self.token_index[id as usize] as usize;
-                        let end = if (id as usize) + 1 < self.token_index.len() {
-                            self.token_index[(id as usize) + 1] as usize
-                        } else {
-                            self.token_table.len()
-                        };
-                        name.push_str(core::str::from_utf8(&self.token_table[start..end]).unwrap());
-                    }
-                    i += 3;
-                } else if i + 3 < bytes.len() && bytes[i + 3] == TOKEN_MARKER {
-                    let id = ((bytes[i + 1] as u16) << 8) | (bytes[i + 2] as u16);
-                    if (id as usize) < self.token_index.len() {
-                        let start = self.token_index[id as usize] as usize;
-                        let end = if (id as usize) + 1 < self.token_index.len() {
-                            self.token_index[(id as usize) + 1] as usize
-                        } else {
-                            self.token_table.len()
-                        };
-                        name.push_str(core::str::from_utf8(&self.token_table[start..end]).unwrap());
-                    }
-                    i += 4;
-                } else {
-                    // Not a valid token encoding; treat as a raw byte
-                    name.push(bytes[i] as char);
-                    i += 1;
-                }
-            } else {
-                name.push(bytes[i] as char);
-                i += 1;
+        let mut offset = 0;
+        if bytes[i] == TOKEN_MARKER {
+            let mut token_id = None;
+            // Try to parse 0xFF <id> 0xFF (1-byte) or 0xFF <id_hi> <id_lo> 0xFF (2-byte)
+            if i + 2 < bytes.len() && bytes[i + 2] == TOKEN_MARKER {
+                let id = bytes[i + 1] as u16;
+                token_id = Some(id);
+                i += 3;
+            } else if i + 3 < bytes.len() && bytes[i + 3] == TOKEN_MARKER {
+                let id = ((bytes[i + 1] as u16) << 8) | (bytes[i + 2] as u16);
+                token_id = Some(id);
+                i += 4;
             }
+            if let Some(id) = token_id {
+                if (id as usize) < self.token_index.len() {
+                    let start = self.token_index[id as usize] as usize;
+                    let end = if (id as usize) + 1 < self.token_index.len() {
+                        self.token_index[(id as usize) + 1] as usize
+                    } else {
+                        self.token_table.len()
+                    };
+                    let token_str = &self.token_table[start..end];
+                    let need_copy = (KSYM_NAME_LEN - offset).min(token_str.len());
+                    name_buf[offset..offset + need_copy].copy_from_slice(&token_str[..need_copy]);
+                    offset += need_copy;
+                }
+            }
+            // Append the rest as raw bytes
+            let need_copy = (KSYM_NAME_LEN - offset).min(bytes.len() - i);
+            name_buf[offset..offset + need_copy].copy_from_slice(&bytes[i..i + need_copy]);
+            offset += need_copy;
+        } else {
+            // Not a token; treat as raw bytes
+            let need_copy = (KSYM_NAME_LEN - offset).min(bytes.len() - i);
+            name_buf[offset..offset + need_copy].copy_from_slice(&bytes[i..i + need_copy]);
+            offset += need_copy;
         }
-        // Pop the last character (symbol type)
-        let ty = name.pop().unwrap_or_default();
-        (name, ty)
+        let name = core::str::from_utf8(&name_buf[..offset]).unwrap_or_default();
+        name
     }
 
-    fn read_compressed_len(bytes: &[u8]) -> u16 {
-        if bytes.len() < 2 {
-            return 0;
+    fn read_compressed_len_and_type(bytes: &[u8]) -> (u16, char) {
+        if bytes.len() < PREFIX_LEN {
+            return (0, ' ');
         }
         // little-endian: lo first, then hi
-        let len_lo = bytes[0] as u16;
-        let len_hi = bytes[1] as u16;
-        (len_hi << 8) | len_lo
+        // we skip the type byte
+        let len_lo = bytes[0 + TY_LEN] as u16;
+        let len_hi = bytes[1 + TY_LEN] as u16;
+        ((len_hi << 8) | len_lo, bytes[0] as char)
     }
 
-    /// Address → Symbol lookup. Returns (symbol name, symbol size, offset within symbol)
+    /// Address → Symbol lookup. Returns (symbol name, symbol size, offset within symbol, type) if found.
     ///
     /// See <https://elixir.bootlin.com/linux/v6.6/source/kernel/kallsyms.c#L446>
-    pub fn lookup_address(&self, addr: u64) -> Option<(String, u64, u64)> {
+    pub fn lookup_address<'b>(
+        &self,
+        addr: u64,
+        name_buf: &'b mut [u8; KSYM_NAME_LEN],
+    ) -> Option<(&'b str, u64, u64, char)> {
         // Quick check: address within text section and symbols exist
         if addr < self.stext || addr >= self.etext || self.kallsyms_num_syms == 0 {
             return None;
@@ -247,14 +263,13 @@ impl<'a> KallsymsMapped<'a> {
         let symbol_end = symbol_end.unwrap_or(self.etext);
 
         let start = self.kallsyms_offsets[low] as usize;
-        let end = Self::read_compressed_len(&self.kallsyms_names[start..]) as usize
-            + start
-            + LENGTH_BYTES;
+        let (len, ty) = Self::read_compressed_len_and_type(&self.kallsyms_names[start..]);
+        let end = start + PREFIX_LEN + len as usize;
         Some((
-            self.expand_symbol(&self.kallsyms_names[start + LENGTH_BYTES..end])
-                .0,
+            self.expand_symbol(&self.kallsyms_names[start + PREFIX_LEN..end], name_buf),
             symbol_end - symbol_start,
             addr - symbol_start,
+            ty,
         ))
     }
 
@@ -273,24 +288,22 @@ impl<'a> KallsymsMapped<'a> {
     ///
     /// See <https://elixir.bootlin.com/linux/v6.6/source/kernel/kallsyms.c#L208>
     pub fn lookup_names(&self, name: &str, need_end: bool) -> Option<(usize, usize)> {
+        let mut name_buf = [0u8; KSYM_NAME_LEN];
         if self.kallsyms_num_syms == 0 {
             return None;
         }
         let mut low = 0usize;
         let mut high = self.kallsyms_num_syms - 1;
         let mut mid = 0usize;
-
         while low <= high {
             mid = low + (high - low) / 2;
             // address-order index
             let seq = self.kallsyms_seqs_of_names[mid] as usize;
             let start = self.kallsyms_offsets[seq] as usize;
-            let end = Self::read_compressed_len(&self.kallsyms_names[start..]) as usize
-                + start
-                + LENGTH_BYTES;
-            let mid_name = self
-                .expand_symbol(&self.kallsyms_names[start + LENGTH_BYTES..end])
-                .0;
+            let (len, _ty) = Self::read_compressed_len_and_type(&self.kallsyms_names[start..]);
+            let end = start + PREFIX_LEN + len as usize;
+            let mid_name =
+                self.expand_symbol(&self.kallsyms_names[start + PREFIX_LEN..end], &mut name_buf);
             match name.cmp(&mid_name) {
                 core::cmp::Ordering::Equal => break,
                 core::cmp::Ordering::Less => high = mid - 1,
@@ -305,12 +318,10 @@ impl<'a> KallsymsMapped<'a> {
         while low > 0 {
             let seq = self.kallsyms_seqs_of_names[low - 1] as usize;
             let start = self.kallsyms_offsets[seq] as usize;
-            let end = Self::read_compressed_len(&self.kallsyms_names[start..]) as usize
-                + start
-                + LENGTH_BYTES;
-            let mid_name = self
-                .expand_symbol(&self.kallsyms_names[start + LENGTH_BYTES..end])
-                .0;
+            let (len, _ty) = Self::read_compressed_len_and_type(&self.kallsyms_names[start..]);
+            let end = start + PREFIX_LEN + len as usize;
+            let mid_name =
+                self.expand_symbol(&self.kallsyms_names[start + PREFIX_LEN..end], &mut name_buf);
             if mid_name != name {
                 break;
             }
@@ -324,12 +335,10 @@ impl<'a> KallsymsMapped<'a> {
             while high < self.kallsyms_num_syms - 1 {
                 let seq = self.kallsyms_seqs_of_names[high + 1] as usize;
                 let start = self.kallsyms_offsets[seq] as usize;
-                let end = Self::read_compressed_len(&self.kallsyms_names[start..]) as usize
-                    + start
-                    + LENGTH_BYTES;
+                let (len, _ty) = Self::read_compressed_len_and_type(&self.kallsyms_names[start..]);
+                let end = start + PREFIX_LEN + len as usize;
                 let mid_name = self
-                    .expand_symbol(&self.kallsyms_names[start + LENGTH_BYTES..end])
-                    .0;
+                    .expand_symbol(&self.kallsyms_names[start + PREFIX_LEN..end], &mut name_buf);
                 if mid_name != name {
                     break;
                 }

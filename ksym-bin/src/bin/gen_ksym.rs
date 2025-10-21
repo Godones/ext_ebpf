@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Debug, io::Write};
+use std::{collections::HashMap, fmt::Debug, io::Write, u64};
 
 use ksym_bin::TOKEN_MARKER;
 
@@ -77,7 +77,7 @@ impl KallsymsBlob {
 
     /// Compress all symbol names, auto-generating tokens.
     /// Storage order: address order, with a name-order to address-order mapping.
-    pub fn compress_symbols(&mut self, symbols: &[(String, u64)]) {
+    pub fn compress_symbols(&mut self, symbols: &[(String, u64, char)]) {
         // 0) Build indices for name order and address order.
         let n = symbols.len();
         if n == 0 {
@@ -97,7 +97,7 @@ impl KallsymsBlob {
         // 1) Count possible tokens using prefix-based heuristic.
         // For each symbol, consider only prefixes of specific lengths.
         let mut token_count: HashMap<String, usize> = HashMap::new();
-        for (name, _) in symbols.iter() {
+        for (name, _, _) in symbols.iter() {
             let bytes = name.as_bytes();
             for &len in PREFIX_CANDIDATE_LENS {
                 if bytes.len() >= len {
@@ -141,7 +141,7 @@ impl KallsymsBlob {
 
         // 3) Compress symbols in address order and build offsets/addresses.
         for &orig_idx in &idx_by_addr {
-            let (ref sym, addr) = symbols[orig_idx];
+            let (ref sym, addr, ty) = symbols[orig_idx];
             self.kallsyms_offsets.push(self.kallsyms_names.len() as u32);
             self.kallsyms_addresses.push(addr);
 
@@ -156,10 +156,14 @@ impl KallsymsBlob {
                 }
                 let candidate = &sym[..l];
                 if let Some(&id) = self.token_map.get(candidate) {
-                    // [length](0xff token 0xff)[remaining bytes]
-                    // [16-bit](8bit_hi token_hi token_lo 8bit_lo)[remaining bytes]
+                    // 1. [type] [length] (0xff  token             0xff) [remaining bytes]
+                    // 2. [type] [length] (0xff  token_hi token_lo 0xff) [remaining bytes]
+                    //    [1byte][2bytes] (1byte 1byte    1byte   1byte) [remaining bytes]
                     let mut length: u16 = if id < 256 { 3 } else { 4 };
                     length += (rem - l) as u16;
+                    // Emit type char
+                    self.kallsyms_names.push(ty as u8);
+
                     // Emit length (little-endian: lo, hi)
                     self.kallsyms_names.push((length & 0xFF) as u8);
                     self.kallsyms_names.push((length >> 8) as u8);
@@ -180,6 +184,9 @@ impl KallsymsBlob {
 
             if consumed == 0 {
                 // No token matched; emit full symbol as raw bytes
+                // Emit type char
+                self.kallsyms_names.push(ty as u8);
+                // Emit length
                 let length = rem as u16;
                 // little-endian: lo, hi
                 self.kallsyms_names.push((length & 0xFF) as u8);
@@ -254,7 +261,7 @@ impl KallsymsBlob {
     }
 }
 
-fn read_symbol(line: &str) -> Option<(String, u64)> {
+fn read_symbol(line: &str) -> Option<(String, u64, char)> {
     if line.len() > 4096 {
         panic!("The kernel symbol is too long: {}", line);
     }
@@ -275,14 +282,10 @@ fn read_symbol(line: &str) -> Option<(String, u64)> {
     } else {
         symbol = format!("{}", symbol);
     }
-    // we want to keep the symbol type for later use so
-    // we append it back to the symbol name.
-    symbol.push(symbol_type);
-
-    Some((symbol, vaddr))
+    Some((symbol, vaddr, symbol_type))
 }
 
-fn read_map() -> Vec<(String, u64)> {
+fn read_map() -> Vec<(String, u64, char)> {
     let mut symbol_table = Vec::new();
     let mut line = String::new();
     loop {
@@ -312,6 +315,8 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use ksym_bin::KSYM_NAME_LEN;
+
     use crate::KallsymsBlob;
     #[test]
     fn test() {
@@ -323,7 +328,7 @@ mod tests {
         0000000000001200 T cpu_startup_entry
         0000000000001400 T cpu_startup_entry
     "#;
-        let symbols: Vec<(String, u64)> = symbols
+        let symbols: Vec<(String, u64, char)> = symbols
             .lines()
             .filter_map(|line| super::read_symbol(line.trim()))
             .collect();
@@ -339,23 +344,23 @@ mod tests {
         let mapped =
             ksym_bin::KallsymsMapped::from_blob(&binary_blob, 0x1000, 0x1500).expect("parse blob");
 
-        assert_eq!(mapped.lookup_address(100), None);
+        assert_eq!(mapped.lookup_address(100, &mut [0; KSYM_NAME_LEN]), None);
         assert_eq!(
-            mapped.lookup_address(0x1200),
-            Some(("cpu_startup_entry".to_string(), 0x100, 0))
+            mapped.lookup_address(0x1200, &mut [0; KSYM_NAME_LEN]),
+            Some(("cpu_startup_entry", 0x100, 0, 'T'))
         );
         // Test aliased symbols
         assert_eq!(
-            mapped.lookup_address(0x1300),
-            Some(("alias_do_fork".to_string(), 0x100, 0))
+            mapped.lookup_address(0x1300, &mut [0; KSYM_NAME_LEN]),
+            Some(("alias_do_fork", 0x100, 0, 'T'))
         );
         assert_eq!(
-            mapped.lookup_address(0x1250),
-            Some(("cpu_startup_entry".to_string(), 0x100, 0x50))
+            mapped.lookup_address(0x1250, &mut [0; KSYM_NAME_LEN]),
+            Some(("cpu_startup_entry", 0x100, 0x50, 'T'))
         );
         assert_eq!(
-            mapped.lookup_address(0x1450),
-            Some(("cpu_startup_entry".to_string(), 0x100, 0x50))
+            mapped.lookup_address(0x1450, &mut [0; KSYM_NAME_LEN]),
+            Some(("cpu_startup_entry", 0x100, 0x50, 'T'))
         );
         assert_eq!(
             mapped.lookup_name("cpu_startup_entry"),
@@ -367,5 +372,15 @@ mod tests {
         println!("All tests passed.");
         let dumped = mapped.dump_all_symbols();
         println!("Dumped all symbols:\n{}", dumped);
+    }
+
+    fn trans<'b>(buf: &'b mut [u8; 10]) -> &'b str {
+        buf.copy_from_slice(b"abcdabcdab");
+        std::str::from_utf8(buf).unwrap()
+    }
+    #[test]
+    fn k() {
+        let mut buf = [0u8; 10];
+        assert_eq!(trans(&mut buf), "abcdabcdab");
     }
 }
