@@ -33,8 +33,8 @@ KallsymsBlob is a build-time container used to collect symbols, compress them, a
 Relationship:
 - For the i-th symbol in address order:
   - Address = `kallsyms_addresses[i]`
-  - Name record begins at `kallsyms_offsets[i]`. Each name record starts with a 2-byte length prefix `LENGTH_BYTES=2` (little-endian), followed by `entry_len` bytes of payload. The actual slice is:
-    `kallsyms_names[kallsyms_offsets[i] + LENGTH_BYTES .. kallsyms_offsets[i] + LENGTH_BYTES + entry_len]`.
+  - Name record begins at `kallsyms_offsets[i]`. Each name record starts with a 1-byte type prefix `TY_LEN=1` and a 2-byte length prefix `LENGTH_BYTES=2` (little-endian), followed by `entry_len` bytes of payload. The actual slice is:
+    `kallsyms_names[kallsyms_offsets[i] + PREFIX_LEN .. kallsyms_offsets[i] + PREFIX_LEN + entry_len] (PREFIX_LEN = TY_LEN + LENGTH_BYTES)`.
 - Name search: binary search over `kallsyms_seqs_of_names`; once `mid` is found, retrieve the address-order index `seq = kallsyms_seqs_of_names[mid]`.
 
 ## Compression and token selection
@@ -46,12 +46,13 @@ Relationship:
   - Try only one token at the beginning of the name (longer candidates first);
   - If matched, emit the token code and then append the remaining raw bytes; otherwise, write the whole name as raw bytes.
 - Each name record is encoded as a “fixed-size prefix + payload”:
+  - A 1-byte type prefix;
   - A 2-byte little-endian length prefix specifies the size of the payload;
   - If a token is used, the payload starts with `0xFF <id> 0xFF` (1-byte id) or `0xFF <id_hi> <id_lo> 0xFF` (2-byte id), followed by the remaining raw bytes;
   - If no token is used, the payload is simply the raw name bytes.
 - Token marker constant: `TOKEN_MARKER = 0xFF`.
 
-Note: Only text symbols (T/t) are kept from the input, and Rust demangling is applied. During encoding, the symbol type character (T/t) is appended to the end of the name and compressed alongside it. During decoding, the last character is returned as `type_char` together with the actual name as `(name, type_char)`.
+Note: Only text symbols (T/t) are kept from the input, and Rust demangling is applied. During encoding, the symbol type character (T/t) is prefixed to the compressed name.
 
 ## Symbol ordering and lookup
 
@@ -75,7 +76,7 @@ Segment order (alignment in parentheses):
 5) names:                      (align 8)
    - names_len: u64
    - names_bytes[names_len]: u8[]
-     - repeated name records: `[len: u16(le)] [payload: u8[len]]`
+     - repeated name records: `[[type: u8] [len: u16(le)] [payload: u8[len]]`
 6) token_table:                (align 8)
    - token_table_len: u64
    - token_table_bytes[token_table_len]: u8[]

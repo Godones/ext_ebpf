@@ -33,8 +33,8 @@ KallsymsBlob 是构建期的数据容器，用于收集符号并压缩、序列�
 关系示意：
 - 地址序下的第 i 个符号：
   - 地址 = `kallsyms_addresses[i]`
-  - 名称压缩片段起始 = `kallsyms_offsets[i]`，每条名称均以前缀长度字段开头，长度为 `LENGTH_BYTES=2`（小端，低字节在前），
-    实际片段范围 = `kallsyms_names[kallsyms_offsets[i] + LENGTH_BYTES .. kallsyms_offsets[i] + LENGTH_BYTES + entry_len]`，其中 `entry_len` 来自该条目前置的 2 字节小端长度。
+  - 名称压缩片段起始 = `kallsyms_offsets[i]`，每条名称均以类型和前缀长度字段开头，长度为 `TY_LEN=1`、`LENGTH_BYTES=2`（小端，低字节在前），即PREFIX_LEN = TY_LEN + LENGTH_BYTES，
+    实际片段范围 = `kallsyms_names[kallsyms_offsets[i] + PREFIX_LEN .. kallsyms_offsets[i] + PREFIX_LEN + entry_len]`，其中 `entry_len` 来自该条目前置的 2 字节小端长度。
 - 名字序查找：在 `kallsyms_seqs_of_names` 上二分比较（通过展开名称），命中 `mid` 后得到地址序索引 `seq = kallsyms_seqs_of_names[mid]`。
 
 ## 压缩与 token 选择规则
@@ -46,12 +46,12 @@ KallsymsBlob 是构建期的数据容器，用于收集符号并压缩、序列�
   - 仅在名称开头尝试匹配一个 token（按候选长度从长到短）；
   - 命中后写入 token 编码，剩余部分以原始字节追加；若未命中，则整名以原始字节写入。
 - 名称条目为“定长前缀 + 负载”的记录格式：
-  - 每个名称条目以 2 字节长度（小端，低字节在前）作为前缀，表示“负载”的总字节数；
+  - 每个名称条目1字节类型 + 2 字节长度（小端，低字节在前）作为前缀，表示“负载”的总字节数；
   - 若使用 token，负载以 `0xFF <id> 0xFF`（1 字节 id）或 `0xFF <id_hi> <id_lo> 0xFF`（2 字节 id）开头，随后跟随名称剩余原始字节；
   - 若未使用 token，负载即为整名的原始字节。
 - Token 编码中使用的分隔符常量：`TOKEN_MARKER = 0xFF`。
 
-备注：读取输入时仅保留文本符号类型 T/t，并进行 Rust demangle。编码阶段会把符号类型字符（T/t）附加在名称末尾一并压缩；解码阶段会返回 `(name, type_char)` 二元组，其中 `name` 为去掉类型后的纯名称。
+备注：读取输入时仅保留文本符号类型 T/t，并进行 Rust demangle。编码阶段会把符号类型字符（T/t）作为前缀放在压缩名称的最前面。
 
 ## 符号排序与查找
 
@@ -75,7 +75,7 @@ KallsymsBlob 是构建期的数据容器，用于收集符号并压缩、序列�
 5) names:                      (align 8)
    - names_len: u64
    - names_bytes[names_len]: u8[]
-     - 重复的“名称条目记录”：`[len: u16(le)] [payload: u8[len]]`
+     - 重复的“名称条目记录”：`[type: u8] [len: u16(le)] [payload: u8[len]]`
 6) token_table:                (align 8)
    - token_table_len: u64
    - token_table_bytes[token_table_len]: u8[]
