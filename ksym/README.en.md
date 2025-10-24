@@ -108,7 +108,7 @@ Notes:
 
 - Generation:
   - Pipe `nm -n -C {ELF}` (keeping T/t only) into the generator, e.g.:
-    - `nm -n -C {ELF} | cargo run -p ksym-bin --bin gen_ksym --features demangle > kallsyms.bin`
+    - `nm -n -C {ELF} | grep ' [Tt] ' | grep -v '\.L' | grep -v '$x' | cargo run -p ksym-bin --bin gen_ksym --features demangle > kallsyms.bin`
 - Reading (consumer):
   - Use `ksym_bin::KallsymsMapped::from_blob(&blob, stext, etext)` for zero-copy parsing;
   - Use `lookup_address`, `lookup_name`, or `dump_all_symbols()` (dump line format: `<addr_hex> <type_char> <name>`).

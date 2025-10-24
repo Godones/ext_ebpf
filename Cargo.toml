@@ -1,12 +1,5 @@
 [workspace]
-members = [
-    "bpf-basic",
-    "kprobe",
-    "ktracepoint",
-    "ksym",
-    "unikernel/*",
-    "ksym-bin",
-]
+members = ["bpf-basic", "kprobe", "ktracepoint", "ksym", "unikernel/*"]
 resolver = "2"
 
 [workspace.package]
