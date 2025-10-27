@@ -13,7 +13,6 @@ rustc-demangle = { version = "0.1", optional = true }
 
 [features]
 demangle = ["dep:rustc-demangle"]
-assembly = []
 
 [[bin]]
 name = "gen_ksym"
