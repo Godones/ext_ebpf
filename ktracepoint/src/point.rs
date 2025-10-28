@@ -1,5 +1,8 @@
 use alloc::{boxed::Box, collections::BTreeMap, format, string::String};
-use core::{any::Any, sync::atomic::AtomicU32};
+use core::{
+    any::Any,
+    sync::atomic::{AtomicBool, AtomicU32},
+};
 
 use lock_api::{Mutex, RawMutex};
 use static_keys::RawStaticFalseKey;
@@ -44,9 +47,11 @@ pub struct TracePoint<L: RawMutex + 'static, K: KernelTraceOps + 'static> {
     name: &'static str,
     system: &'static str,
     key: &'static RawStaticFalseKey<KernelCodeManipulator<K>>,
+    event_status: AtomicBool,
     id: AtomicU32,
-    callback: Mutex<L, BTreeMap<usize, TracePointFunc>>,
-    raw_callback: Mutex<L, BTreeMap<usize, Box<dyn TracePointCallBackFunc>>>,
+    default_callbacks: Mutex<L, BTreeMap<usize, TracePointFunc>>,
+    event_callbacks: Mutex<L, BTreeMap<usize, Box<dyn TracePointCallBackFunc>>>,
+    raw_event_callbacks: Mutex<L, BTreeMap<usize, Box<dyn RawTracePointCallBackFunc>>>,
     trace_entry_fmt_func: fn(&[u8]) -> String,
     trace_print_func: fn() -> String,
     flags: u8,
@@ -79,6 +84,12 @@ pub trait TracePointCallBackFunc: Send + Sync {
     fn call(&self, entry: &[u8]);
 }
 
+/// A trait for raw callback functions that can be registered with a tracepoint.
+pub trait RawTracePointCallBackFunc: Send + Sync {
+    /// Call the callback function with the given raw trace entry data.
+    fn call(&self, args: &[u64]);
+}
+
 /// A structure representing a registered tracepoint callback function.
 #[derive(Debug)]
 pub struct TracePointFunc {
@@ -101,12 +112,14 @@ impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePoint<L, K> {
             name,
             system,
             key,
+            event_status: AtomicBool::new(false),
             id: AtomicU32::new(0),
             flags: 0,
             trace_entry_fmt_func: fmt_func,
             trace_print_func,
-            callback: Mutex::new(BTreeMap::new()),
-            raw_callback: Mutex::new(BTreeMap::new()),
+            default_callbacks: Mutex::new(BTreeMap::new()),
+            event_callbacks: Mutex::new(BTreeMap::new()),
+            raw_event_callbacks: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -153,66 +166,112 @@ impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePoint<L, K> {
     pub fn register(&self, func: fn(), data: Box<dyn Any + Sync + Send>) {
         let trace_point_func = TracePointFunc { func, data };
         let ptr = func as usize;
-        self.callback.lock().entry(ptr).or_insert(trace_point_func);
+        self.default_callbacks
+            .lock()
+            .entry(ptr)
+            .or_insert(trace_point_func);
     }
 
     /// Unregister a callback function from the tracepoint
     pub fn unregister(&self, func: fn()) {
         let func_ptr = func as usize;
-        self.callback.lock().remove(&func_ptr);
+        self.default_callbacks.lock().remove(&func_ptr);
     }
 
     /// Iterate over all registered callback functions
     pub fn callback_list(&self, f: &dyn Fn(&TracePointFunc)) {
-        let callback = self.callback.lock();
+        let callback = self.default_callbacks.lock();
         for trace_func in callback.values() {
             f(trace_func);
         }
     }
 
-    /// Register a raw callback function to the tracepoint
+    /// Register a event callback function to the tracepoint
     ///
     /// This function will be called when default tracepoint fmt function is called.
-    pub fn register_raw_callback(
+    pub fn register_event_callback(
         &self,
         callback_id: usize,
         callback: Box<dyn TracePointCallBackFunc>,
     ) {
-        self.raw_callback
+        self.event_callbacks
             .lock()
             .entry(callback_id)
             .or_insert(callback);
     }
 
-    /// Unregister a raw callback function from the tracepoint
-    pub fn unregister_raw_callback(&self, callback_id: usize) {
-        self.raw_callback.lock().remove(&callback_id);
+    /// Unregister a event callback function from the tracepoint
+    pub fn unregister_event_callback(&self, callback_id: usize) {
+        self.event_callbacks.lock().remove(&callback_id);
     }
 
-    /// Iterate over all registered raw callback functions
-    pub fn raw_callback_list(&self, f: &dyn Fn(&Box<dyn TracePointCallBackFunc>)) {
-        let raw_callback = self.raw_callback.lock();
+    /// Iterate over all registered event callback functions
+    pub fn event_callback_list(&self, f: &dyn Fn(&Box<dyn TracePointCallBackFunc>)) {
+        let raw_callback = self.event_callbacks.lock();
         for callback in raw_callback.values() {
             f(callback);
         }
     }
 
-    /// Enable the tracepoint
-    pub fn enable(&self) {
+    /// Register a raw event callback function to the tracepoint
+    pub fn register_raw_event_callback(
+        &self,
+        callback_id: usize,
+        callback: Box<dyn RawTracePointCallBackFunc>,
+    ) {
+        self.raw_event_callbacks
+            .lock()
+            .entry(callback_id)
+            .or_insert(callback);
+    }
+
+    /// Unregister a raw event callback function from the tracepoint
+    pub fn unregister_raw_event_callback(&self, callback_id: usize) {
+        self.raw_event_callbacks.lock().remove(&callback_id);
+    }
+
+    /// Iterate over all registered raw event callback functions
+    pub fn raw_event_callback_list(&self, f: &dyn Fn(&Box<dyn RawTracePointCallBackFunc>)) {
+        let raw_callback = self.raw_event_callbacks.lock();
+        for callback in raw_callback.values() {
+            f(callback);
+        }
+    }
+
+    /// Enable the tracepoint for the default print
+    pub fn enable_default(&self) {
         unsafe {
             self.key.enable();
         }
     }
 
-    /// Disable the tracepoint
-    pub fn disable(&self) {
+    /// Disable the tracepoint for the default print
+    pub fn disable_default(&self) {
         unsafe {
             self.key.disable();
         }
     }
 
-    /// Check if the tracepoint is enabled
-    pub fn is_enabled(&self) -> bool {
+    /// Check if the tracepoint is enabled for the default print
+    pub fn default_is_enabled(&self) -> bool {
         self.key.is_enabled()
+    }
+
+    /// Enable the tracepoint event for custom event handling
+    pub fn enable_event(&self) {
+        self.event_status
+            .store(true, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Disable the tracepoint event for custom event handling
+    pub fn disable_event(&self) {
+        self.event_status
+            .store(false, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Check if the tracepoint event is enabled for custom event handling
+    pub fn event_is_enabled(&self) -> bool {
+        self.event_status
+            .load(core::sync::atomic::Ordering::Relaxed)
     }
 }

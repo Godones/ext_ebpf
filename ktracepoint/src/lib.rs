@@ -13,6 +13,7 @@ extern crate alloc;
 
 mod basic_macro;
 mod point;
+mod ptr;
 mod trace_pipe;
 
 use alloc::{
@@ -31,8 +32,10 @@ use core::{
 use lock_api::{Mutex, MutexGuard, RawMutex};
 pub use paste::paste;
 pub use point::{
-    CommonTracePointMeta, TraceEntry, TracePoint, TracePointCallBackFunc, TracePointFunc,
+    CommonTracePointMeta, RawTracePointCallBackFunc, TraceEntry, TracePoint,
+    TracePointCallBackFunc, TracePointFunc,
 };
+pub use ptr::AsU64;
 use static_keys::code_manipulate::CodeManipulator;
 pub use trace_pipe::{
     TraceCmdLineCache, TraceCmdLineCacheSnapshot, TraceEntryParser, TracePipeOps, TracePipeRaw,
@@ -261,7 +264,7 @@ impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePointEnableFile<L,
     ///
     /// Returns true if the tracepoint is enabled, false otherwise.
     pub fn read(&self) -> &'static str {
-        if self.tracepoint.is_enabled() {
+        if self.tracepoint.default_is_enabled() {
             "1\n"
         } else {
             "0\n"
@@ -270,8 +273,8 @@ impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePointEnableFile<L,
     /// Enable or disable the tracepoint
     pub fn write(&self, enable: char) {
         match enable {
-            '1' => self.tracepoint.enable(),
-            '0' => self.tracepoint.disable(),
+            '1' => self.tracepoint.enable_default(),
+            '0' => self.tracepoint.disable_default(),
             _ => {
                 log::warn!("Invalid value for tracepoint enable: {enable}");
             }

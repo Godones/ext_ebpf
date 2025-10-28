@@ -2,6 +2,7 @@ mod array;
 mod hash;
 mod lru;
 mod queue;
+mod stream;
 use alloc::{
     boxed::Box,
     string::{String, ToString},

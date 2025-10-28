@@ -30,10 +30,15 @@ This project aims to provide a set of components for adding eBPF support to the 
     - Monolithic kernels
         - [x] [DragonOS](https://github.com/DragonOS-Community/DragonOS)
         - [x] [Alien](https://github.com/Godones/Alien)
+        - [x] [Starry](https://github.com/Starry-OS/StarryOS)
     - Unikernel
         - [x] [Hermit](https://github.com/os-module/hermit-rs/tree/dev) 
 - [ ] Implement more eBPF maps and helper functions
+  - [ ] ringbuf
 - [ ] Implement other kernel hooks
+  - [ ] rawtracepoint
+  - [ ] uprobe/uretprobe
+  - [ ] perf events
 
 
 ### License

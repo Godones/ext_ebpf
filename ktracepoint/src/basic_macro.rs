@@ -72,12 +72,63 @@ macro_rules! define_event_trace{
                     let trace_point = &[<__ $name>];
                     trace_point.callback_list(&mut f);
                 }
+
+                // call the raw callback functions
+                if [<__ $name>].event_is_enabled() {
+                    #[repr(C)]
+                    struct Entry {
+                        $($entry: $entry_type,)*
+                    }
+                    #[repr(C)]
+                    struct FullEntry {
+                        common: $crate::TraceEntry,
+                        entry: Entry,
+                    }
+
+                    let entry = Entry {
+                        $($assign: $value,)*
+                    };
+
+                    let pid = $kops::current_pid();
+                    let common = $crate::TraceEntry {
+                        type_: [<__ $name>].id() as _,
+                        flags: [<__ $name>].flags(),
+                        preempt_count: 0,
+                        pid: pid as i32,
+                    };
+
+                    let full_entry = FullEntry {
+                        common,
+                        entry,
+                    };
+
+                    let event_buf = unsafe {
+                        core::slice::from_raw_parts(
+                            &full_entry as *const FullEntry as *const u8,
+                            core::mem::size_of::<FullEntry>(),
+                        )
+                    };
+
+                    let func = |f:&alloc::boxed::Box<dyn $crate::TracePointCallBackFunc>|{
+                        f.call(event_buf);
+                    };
+
+                    [<__ $name>].event_callback_list(&func);
+                }
+
+                let args = [$($crate::AsU64::as_u64($arg)),*];
+                let func = |f:&alloc::boxed::Box<dyn $crate::RawTracePointCallBackFunc>|{
+                    f.call(&args);
+                };
+                [<__ $name>].raw_event_callback_list(&func);
             }
+
             #[allow(non_snake_case)]
             pub fn [<register_trace_ $name>](func: fn(& (dyn core::any::Any+Send+Sync), $($arg_type),*), data: alloc::boxed::Box<dyn core::any::Any+Send+Sync>){
                 let func = unsafe{core::mem::transmute::<fn(& (dyn core::any::Any+Send+Sync), $($arg_type),*), fn()>(func)};
                 [<__ $name>].register(func,data);
             }
+
             #[allow(non_snake_case)]
             pub fn [<unregister_trace_ $name>](func: fn(& (dyn core::any::Any+Send+Sync), $($arg_type),*)){
                 let func = unsafe{core::mem::transmute::<fn(& (dyn core::any::Any+Send+Sync), $($arg_type),*), fn()>(func)};
@@ -102,7 +153,7 @@ macro_rules! define_event_trace{
             };
 
             #[allow(non_snake_case)]
-            pub fn [<trace_default_ $name>]<F:$crate::KernelTraceOps>(_data:&mut (dyn core::any::Any+Send+Sync), $($arg:$arg_type),* ){
+            fn [<trace_default_ $name>]<F:$crate::KernelTraceOps>(_data:&mut (dyn core::any::Any+Send+Sync), $($arg:$arg_type),* ){
                 #[repr(C)]
                 struct Entry {
                     $($entry: $entry_type,)*
@@ -136,13 +187,6 @@ macro_rules! define_event_trace{
                         core::mem::size_of::<FullEntry>(),
                     )
                 };
-
-                let func = |f:&alloc::boxed::Box<dyn $crate::TracePointCallBackFunc>|{
-                    f.call(event_buf);
-                };
-
-                [<__ $name>].raw_callback_list(&func);
-
 
                 F::trace_cmdline_push(pid);
                 F::trace_pipe_push_raw_record(event_buf);

@@ -1,5 +1,6 @@
 use ktracepoint::{
-    TraceCmdLineCache, TraceEntryParser, TracePipeOps, TracePointMap, global_init_events,
+    RawTracePointCallBackFunc, TraceCmdLineCache, TraceEntryParser, TracePipeOps,
+    TracePointCallBackFunc, TracePointMap, global_init_events,
 };
 use spin::Mutex;
 extern crate alloc;
@@ -162,7 +163,10 @@ mod tracepoint_test {
         };
         trace_TEST(a, &x);
         trace_TEST2(a, b);
-        println!("Tracepoint TEST called with a={}, b={}", a, b);
+        println!(
+            "Tracepoint TEST called with a={}, b={}, x ptr={:p}",
+            a, b, &x
+        );
     }
 }
 
@@ -188,6 +192,20 @@ fn print_trace_records(
         } else {
             break;
         }
+    }
+}
+
+struct FakeEventCallback;
+
+impl TracePointCallBackFunc for FakeEventCallback {
+    fn call(&self, entry: &[u8]) {
+        println!("FakeEventCallback called with entry: {}", entry.len());
+    }
+}
+
+impl RawTracePointCallBackFunc for FakeEventCallback {
+    fn call(&self, args: &[u64]) {
+        println!("FakeEventCallback (raw) called with args: {:x?}", args);
     }
 }
 
@@ -218,6 +236,14 @@ fn main() {
         for event in events {
             let trace_point_info = subsystem.get_event(&event).unwrap();
             trace_point_info.enable_file().write('1');
+            trace_point_info
+                .tracepoint()
+                .register_event_callback(1, Box::new(FakeEventCallback));
+            trace_point_info.tracepoint().enable_event();
+
+            trace_point_info
+                .tracepoint()
+                .register_raw_event_callback(1, Box::new(FakeEventCallback));
             println!("Enabled tracepoint: {}.{}", sbs, event);
         }
     }
