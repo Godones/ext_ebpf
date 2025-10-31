@@ -265,8 +265,13 @@ impl PtRegs {
     }
 
     /// Get the return value from the a0 register.
-    pub fn ret_value(&self) -> usize {
+    pub fn first_ret_value(&self) -> usize {
         self.a0
+    }
+
+    /// Get the return value from the a1 register.
+    pub fn second_ret_value(&self) -> usize {
+        self.a1
     }
 }
 

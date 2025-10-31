@@ -257,6 +257,17 @@ pub(crate) fn rethook_trampoline_handler<L: RawMutex + 'static, F: KprobeAuxilia
         callback.call(pt_regs);
     }
 
+    // recycle the kretprobe instance
+    let kretprobe_data = kretprobe.kprobe.get_data();
+    let kretprobe_data = kretprobe_data
+        .as_any()
+        .downcast_ref::<KretprobeData<L, F>>()
+        .unwrap();
+    kretprobe_data
+        .free_instances
+        .lock()
+        .push(kretprobe_instance);
+
     arch_rethook_fixup_return(pt_regs, correct_ret_addr);
     correct_ret_addr
 }

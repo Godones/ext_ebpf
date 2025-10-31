@@ -170,9 +170,14 @@ impl PtRegs {
         self.csr_era = pc;
     }
 
-    /// Get the return value from the registers.
-    pub fn ret_value(&self) -> usize {
+    /// Get the return value from the r4(a0) registers.
+    pub fn first_ret_value(&self) -> usize {
         self.regs[4]
+    }
+
+    /// Get the return value from the r5(a1) registers.
+    pub fn second_ret_value(&self) -> usize {
+        self.regs[5]
     }
 }
 

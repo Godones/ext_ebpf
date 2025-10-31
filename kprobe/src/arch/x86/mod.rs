@@ -234,8 +234,13 @@ impl PtRegs {
     }
 
     /// Get the return value from the rax register.
-    pub fn ret_value(&self) -> usize {
+    pub fn first_ret_value(&self) -> usize {
         self.rax
+    }
+
+    /// Get the return value from the rdx register.
+    pub fn second_ret_value(&self) -> usize {
+        self.rdx
     }
 }
 
