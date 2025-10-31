@@ -11,6 +11,7 @@ pub mod map;
 pub mod perf;
 mod preprocessor;
 pub mod prog;
+pub mod raw_tracepoint;
 
 pub use preprocessor::EBPFPreProcessor;
 
