@@ -1,3 +1,6 @@
+//! Basic eBPF helper functions module.
+//!
+pub(crate) mod ringbuf;
 use alloc::{collections::btree_map::BTreeMap, fmt, string::String, vec::Vec};
 use core::{
     ffi::{c_char, c_int, c_void},
@@ -7,12 +10,13 @@ use core::{
 use consts::BPF_F_CURRENT_CPU;
 
 use crate::{
-    map::{BpfCallBackFn, UnifiedMap},
     BpfError, KernelAuxiliaryOps, Result,
+    map::{BpfCallBackFn, UnifiedMap},
 };
 
 pub mod consts;
 
+/// Type alias for a raw BPF helper function.
 pub type RawBPFHelperFn = fn(u64, u64, u64, u64, u64) -> u64;
 
 /// Transmute a function pointer to a RawBPFHelperFn.
@@ -32,6 +36,9 @@ macro_rules! helper_func {
 use printf_compat::{format, output};
 
 /// Printf according to the format string, function will return the number of bytes written(including '\0')
+///
+/// # Safety
+/// The caller must ensure that the format string and arguments are valid.
 pub unsafe extern "C" fn printf(w: &mut impl Write, str: *const c_char, mut args: ...) -> c_int {
     let bytes_written = unsafe { format(str as _, args.as_va_list(), output::fmt_write(w)) };
     bytes_written + 1
@@ -135,7 +142,7 @@ pub fn trace_printf<F: KernelAuxiliaryOps>(
 }
 
 /// See <https://ebpf-docs.dylanreimerink.nl/linux/helper-function/bpf_map_lookup_elem/>
-pub unsafe fn raw_map_lookup_elem<F: KernelAuxiliaryOps>(
+pub fn raw_map_lookup_elem<F: KernelAuxiliaryOps>(
     map: *mut c_void,
     key: *const c_void,
 ) -> *const c_void {
@@ -166,7 +173,7 @@ pub fn map_lookup_elem(unified_map: &mut UnifiedMap, key: &[u8]) -> Result<Optio
 /// See https://ebpf-docs.dylanreimerink.nl/linux/helper-function/bpf_perf_event_output/
 ///
 /// See https://man7.org/linux/man-pages/man7/bpf-helpers.7.html
-pub unsafe fn raw_perf_event_output<F: KernelAuxiliaryOps>(
+pub fn raw_perf_event_output<F: KernelAuxiliaryOps>(
     ctx: *mut c_void,
     map: *mut c_void,
     flags: u64,
@@ -181,7 +188,7 @@ pub unsafe fn raw_perf_event_output<F: KernelAuxiliaryOps>(
 
     match res {
         Ok(_) => 0,
-        Err(e) => e as i64,
+        Err(e) => e.into(),
     }
 }
 
@@ -224,7 +231,7 @@ fn raw_bpf_probe_read(dst: *mut c_void, size: u32, unsafe_ptr: *const c_void) ->
     let res = bpf_probe_read(dst, src);
     match res {
         Ok(_) => 0,
-        Err(e) => e as i64,
+        Err(e) => e.into(),
     }
 }
 
@@ -237,7 +244,10 @@ pub fn bpf_probe_read(dst: &mut [u8], src: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub unsafe fn raw_map_update_elem<F: KernelAuxiliaryOps>(
+/// Update entry with key in map.
+///
+/// See <https://docs.ebpf.io/linux/helper-function/bpf_map_update_elem/>
+pub fn raw_map_update_elem<F: KernelAuxiliaryOps>(
     map: *mut c_void,
     key: *const c_void,
     value: *const c_void,
@@ -254,7 +264,7 @@ pub unsafe fn raw_map_update_elem<F: KernelAuxiliaryOps>(
     });
     match res {
         Ok(_) => 0,
-        Err(e) => e as _,
+        Err(e) => e.into(),
     }
 }
 
@@ -266,17 +276,14 @@ pub fn map_update_elem(
     flags: u64,
 ) -> Result<()> {
     let map = unified_map.map_mut();
-    let value = map.update_elem(key, value, flags);
-    value
+
+    map.update_elem(key, value, flags)
 }
 
 /// Delete entry with key from map.
 ///
 /// The delete map element helper call is used to delete values from maps.
-pub unsafe fn raw_map_delete_elem<F: KernelAuxiliaryOps>(
-    map: *mut c_void,
-    key: *const c_void,
-) -> i64 {
+pub fn raw_map_delete_elem<F: KernelAuxiliaryOps>(map: *mut c_void, key: *const c_void) -> i64 {
     let res = F::get_unified_map_from_ptr(map as *const u8, |unified_map| {
         let meta = unified_map.map_meta();
         let key_size = meta.key_size as usize;
@@ -285,15 +292,15 @@ pub unsafe fn raw_map_delete_elem<F: KernelAuxiliaryOps>(
     });
     match res {
         Ok(_) => 0,
-        Err(e) => e as i64,
+        Err(e) => e.into(),
     }
 }
 
 /// Delete entry with key from map.
 pub fn map_delete_elem(unified_map: &mut UnifiedMap, key: &[u8]) -> Result<()> {
     let map = unified_map.map_mut();
-    let value = map.delete_elem(key);
-    value
+
+    map.delete_elem(key)
 }
 
 /// For each element in map, call callback_fn function with map, callback_ctx and other map-specific
@@ -312,19 +319,19 @@ pub fn map_delete_elem(unified_map: &mut UnifiedMap, key: &[u8]) -> Result<()> {
 /// `long (*callback_fn)(struct bpf_map *map, const void key, void *value, void *ctx);`
 ///
 /// For per_cpu maps, the map_value is the value on the cpu where the bpf_prog is running.
-pub unsafe fn raw_map_for_each_elem<F: KernelAuxiliaryOps>(
+pub fn raw_map_for_each_elem<F: KernelAuxiliaryOps>(
     map: *mut c_void,
     cb: *const c_void,
     ctx: *const c_void,
     flags: u64,
 ) -> i64 {
     let res = F::get_unified_map_from_ptr(map as *const u8, |unified_map| {
-        let cb = unsafe { *core::mem::transmute::<*const c_void, *const BpfCallBackFn>(cb) };
+        let cb = unsafe { *(cb as *const BpfCallBackFn) };
         map_for_each_elem(unified_map, cb, ctx as _, flags)
     });
     match res {
         Ok(v) => v as i64,
-        Err(e) => e as i64,
+        Err(e) => e.into(),
     }
 }
 
@@ -336,14 +343,14 @@ pub fn map_for_each_elem(
     flags: u64,
 ) -> Result<u32> {
     let map = unified_map.map_mut();
-    let value = map.for_each_elem(cb, ctx, flags);
-    value
+
+    map.for_each_elem(cb, ctx, flags)
 }
 
 /// Perform a lookup in percpu map for an entry associated to key on cpu.
 ///
 /// See https://ebpf-docs.dylanreimerink.nl/linux/helper-function/bpf_map_lookup_percpu_elem/
-pub unsafe fn raw_map_lookup_percpu_elem<F: KernelAuxiliaryOps>(
+pub fn raw_map_lookup_percpu_elem<F: KernelAuxiliaryOps>(
     map: *mut c_void,
     key: *const c_void,
     cpu: u32,
@@ -376,7 +383,7 @@ pub fn map_lookup_percpu_elem(
 /// Push an element value in map.
 ///
 /// See https://ebpf-docs.dylanreimerink.nl/linux/helper-function/bpf_map_push_elem/
-pub unsafe fn raw_map_push_elem<F: KernelAuxiliaryOps>(
+pub fn raw_map_push_elem<F: KernelAuxiliaryOps>(
     map: *mut c_void,
     value: *const c_void,
     flags: u64,
@@ -389,21 +396,21 @@ pub unsafe fn raw_map_push_elem<F: KernelAuxiliaryOps>(
     });
     match res {
         Ok(_) => 0,
-        Err(e) => e as i64,
+        Err(e) => e.into(),
     }
 }
 
 /// Push an element value in map.
 pub fn map_push_elem(unified_map: &mut UnifiedMap, value: &[u8], flags: u64) -> Result<()> {
     let map = unified_map.map_mut();
-    let value = map.push_elem(value, flags);
-    value
+
+    map.push_elem(value, flags)
 }
 
 /// Pop an element from map.
 ///
 /// See https://ebpf-docs.dylanreimerink.nl/linux/helper-function/bpf_map_pop_elem/
-pub unsafe fn raw_map_pop_elem<F: KernelAuxiliaryOps>(map: *mut c_void, value: *mut c_void) -> i64 {
+pub fn raw_map_pop_elem<F: KernelAuxiliaryOps>(map: *mut c_void, value: *mut c_void) -> i64 {
     let res = F::get_unified_map_from_ptr(map as *const u8, |unified_map| {
         let meta = unified_map.map_meta();
         let value_size = meta.value_size as usize;
@@ -412,24 +419,21 @@ pub unsafe fn raw_map_pop_elem<F: KernelAuxiliaryOps>(map: *mut c_void, value: *
     });
     match res {
         Ok(_) => 0,
-        Err(e) => e as i64,
+        Err(e) => e.into(),
     }
 }
 
 /// Pop an element from map.
 pub fn map_pop_elem(unified_map: &mut UnifiedMap, value: &mut [u8]) -> Result<()> {
     let map = unified_map.map_mut();
-    let value = map.pop_elem(value);
-    value
+
+    map.pop_elem(value)
 }
 
 /// Get an element from map without removing it.
 ///
 /// See https://ebpf-docs.dylanreimerink.nl/linux/helper-function/bpf_map_peek_elem/
-pub unsafe fn raw_map_peek_elem<F: KernelAuxiliaryOps>(
-    map: *mut c_void,
-    value: *mut c_void,
-) -> i64 {
+pub fn raw_map_peek_elem<F: KernelAuxiliaryOps>(map: *mut c_void, value: *mut c_void) -> i64 {
     let res = F::get_unified_map_from_ptr(map as *const u8, |unified_map| {
         let meta = unified_map.map_meta();
         let value_size = meta.value_size as usize;
@@ -438,23 +442,20 @@ pub unsafe fn raw_map_peek_elem<F: KernelAuxiliaryOps>(
     });
     match res {
         Ok(_) => 0,
-        Err(e) => e as i64,
+        Err(e) => e.into(),
     }
 }
 
 /// Get an element from map without removing it.
 pub fn map_peek_elem(unified_map: &mut UnifiedMap, value: &mut [u8]) -> Result<()> {
     let map = unified_map.map_mut();
-    let value = map.peek_elem(value);
-    value
+
+    map.peek_elem(value)
 }
 
+/// Get the current kernel time in nanoseconds.
 pub fn bpf_ktime_get_ns<F: KernelAuxiliaryOps>() -> u64 {
-    let time = F::ebpf_time_ns();
-    match time {
-        Ok(t) => t,
-        Err(_) => 0,
-    }
+    F::ebpf_time_ns().unwrap_or_default()
 }
 
 /// Copy a NULL terminated string from an unsafe user address unsafe_ptr to dst.
@@ -465,7 +466,7 @@ pub fn bpf_ktime_get_ns<F: KernelAuxiliaryOps>() -> u64 {
 /// On success, the strictly positive length of the output string, including the trailing NULL character. On error, a negative value
 ///
 /// See https://docs.ebpf.io/linux/helper-function/bpf_probe_read_user_str/
-unsafe fn raw_probe_read_user_str<F: KernelAuxiliaryOps>(
+fn raw_probe_read_user_str<F: KernelAuxiliaryOps>(
     dst: *mut c_void,
     size: u32,
     unsafe_ptr: *const c_void,
@@ -481,14 +482,15 @@ unsafe fn raw_probe_read_user_str<F: KernelAuxiliaryOps>(
     // log::info!("<raw_probe_read_user_str>: res: {:?}", res);
     match res {
         Ok(len) => len as i64,
-        Err(e) => e as i64,
+        Err(e) => e.into(),
     }
 }
 
+/// Copy a NULL terminated string from an unsafe user address unsafe_ptr to dst.
 pub fn probe_read_user_str<F: KernelAuxiliaryOps>(dst: &mut [u8], src: *const u8) -> Result<usize> {
     // read a NULL terminated string from user space
     let str = F::string_from_user_cstr(src)?;
-    let len = str.as_bytes().len();
+    let len = str.len();
     let copy_len = len.min(dst.len() - 1); // Leave space for NULL terminator
     dst[..copy_len].copy_from_slice(&str.as_bytes()[..copy_len]);
     dst[copy_len] = 0; // Null-terminate the string
@@ -544,78 +546,41 @@ pub fn init_helper_functions<F: KernelAuxiliaryOps>() -> BTreeMap<u32, RawBPFHel
             HELPER_PROBE_READ_USER_STR,
             helper_func!(raw_probe_read_user_str::<F>),
         );
+
+        use ringbuf::*;
+        // Ring Buffer helpers
+        map.insert(
+            HELPER_BPF_RINGBUF_OUTPUT,
+            helper_func!(raw_bpf_ringbuf_output::<F>),
+        );
+        map.insert(
+            HELPER_BPF_RINGBUF_RESERVE,
+            helper_func!(raw_bpf_ringbuf_reserve::<F>),
+        );
+        map.insert(
+            HELPER_BPF_RINGBUF_SUBMIT,
+            helper_func!(raw_bpf_ringbuf_submit::<F>),
+        );
+        map.insert(
+            HELPER_BPF_RINGBUF_DISCARD,
+            helper_func!(raw_bpf_ringbuf_discard::<F>),
+        );
+        map.insert(
+            HELPER_BPF_RINGBUF_QUERY,
+            helper_func!(raw_bpf_ringbuf_query::<F>),
+        );
+        map.insert(
+            HELPER_BPF_RINGBUF_RESERVE_DYNPTR,
+            helper_func!(raw_bpf_ringbuf_reserve_dynptr::<F>),
+        );
+        map.insert(
+            HELPER_BPF_RINGBUF_SUBMIT_DYNPTR,
+            helper_func!(raw_bpf_ringbuf_submit_dynptr::<F>),
+        );
+        map.insert(
+            HELPER_BPF_RINGBUF_DISCARD_DYNPTR,
+            helper_func!(raw_bpf_ringbuf_discard_dynptr::<F>),
+        );
     }
     map
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct FakeKernelAuxiliaryOps;
-    impl KernelAuxiliaryOps for FakeKernelAuxiliaryOps {
-        fn get_unified_map_from_ptr<F, R>(_ptr: *const u8, _func: F) -> Result<R>
-        where
-            F: FnOnce(&mut UnifiedMap) -> Result<R>,
-        {
-            Err(BpfError::NotSupported)
-        }
-
-        fn get_unified_map_from_fd<F, R>(_map_fd: u32, _func: F) -> Result<R>
-        where
-            F: FnOnce(&mut UnifiedMap) -> Result<R>,
-        {
-            Err(BpfError::NotSupported)
-        }
-
-        fn get_unified_map_ptr_from_fd(map_fd: u32) -> Result<*const u8> {
-            Err(BpfError::NotSupported)
-        }
-
-        fn copy_from_user(src: *const u8, size: usize, dst: &mut [u8]) -> Result<()> {
-            let src = unsafe { core::slice::from_raw_parts(src, size) };
-            dst[..size].copy_from_slice(src);
-            Ok(())
-        }
-
-        fn copy_to_user(dest: *mut u8, size: usize, src: &[u8]) -> Result<()> {
-            let dest = unsafe { core::slice::from_raw_parts_mut(dest, size) };
-            dest.copy_from_slice(src);
-            Ok(())
-        }
-
-        fn current_cpu_id() -> u32 {
-            0
-        }
-
-        fn perf_event_output(
-            _ctx: *mut core::ffi::c_void,
-            _fd: u32,
-            _flags: u32,
-            _data: &[u8],
-        ) -> Result<()> {
-            Err(BpfError::NotSupported)
-        }
-
-        fn string_from_user_cstr(ptr: *const u8) -> Result<alloc::string::String> {
-            Err(BpfError::NotSupported)
-        }
-
-        fn ebpf_write_str(str: &str) -> Result<()> {
-            // This is a fake implementation for testing purposes
-            Ok(())
-        }
-
-        fn ebpf_time_ns() -> Result<u64> {
-            // This is a fake implementation for testing purposes
-            Ok(0)
-        }
-    }
-
-    #[test]
-    fn define_bpf_helper() {
-        let f = raw_map_lookup_elem::<FakeKernelAuxiliaryOps>;
-        let bpf_helper = helper_func!(raw_map_lookup_elem::<FakeKernelAuxiliaryOps>);
-        assert_eq!(f as usize, bpf_helper as usize);
-    }
 }

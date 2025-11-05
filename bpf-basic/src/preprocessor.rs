@@ -3,10 +3,11 @@ use alloc::{vec, vec::Vec};
 use rbpf::ebpf::{self, to_insn_vec};
 
 use crate::{
-    linux_bpf::{BPF_PSEUDO_MAP_FD, BPF_PSEUDO_MAP_VALUE},
     KernelAuxiliaryOps, Result,
+    linux_bpf::{BPF_PSEUDO_MAP_FD, BPF_PSEUDO_MAP_VALUE},
 };
 
+/// eBPF preprocessor for relocating map file descriptors in eBPF instructions.
 pub struct EBPFPreProcessor {
     new_insn: Vec<u8>,
     raw_file_ptr: Vec<usize>,
@@ -93,7 +94,7 @@ impl EBPFPreProcessor {
         }
         Ok(Self {
             new_insn: instructions,
-            raw_file_ptr: raw_file_ptr,
+            raw_file_ptr,
         })
     }
 

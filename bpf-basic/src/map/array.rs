@@ -2,7 +2,7 @@ use alloc::{boxed::Box, vec, vec::Vec};
 use core::ops::{Index, IndexMut, Range};
 
 use super::{
-    round_up, BpfCallBackFn, BpfMapCommonOps, BpfMapMeta, PerCpuVariants, PerCpuVariantsOps,
+    BpfCallBackFn, BpfMapCommonOps, BpfMapMeta, PerCpuVariants, PerCpuVariantsOps, round_up,
 };
 use crate::{BpfError, Result};
 
@@ -24,7 +24,7 @@ struct ArrayMapData {
 }
 impl ArrayMapData {
     pub fn new(elem_size: u32, max_entries: u32) -> Self {
-        debug_assert!(elem_size % 8 == 0);
+        debug_assert!(elem_size.is_multiple_of(8));
         let total_size = elem_size * max_entries;
         let data = vec![0; total_size as usize];
         ArrayMapData { elem_size, data }
@@ -73,6 +73,7 @@ impl BpfMapCommonOps for ArrayMap {
         let val = self.data.index(index);
         Ok(Some(val))
     }
+
     fn update_elem(&mut self, key: &[u8], value: &[u8], _flags: u64) -> Result<()> {
         if key.len() != 4 {
             return Err(BpfError::InvalidArgument);
@@ -88,10 +89,7 @@ impl BpfMapCommonOps for ArrayMap {
         old_value[..value.len()].copy_from_slice(value);
         Ok(())
     }
-    /// For ArrayMap, delete_elem is not supported.
-    fn delete_elem(&mut self, _key: &[u8]) -> Result<()> {
-        Err(BpfError::InvalidArgument)
-    }
+
     fn for_each_elem(&mut self, cb: BpfCallBackFn, ctx: *const u8, flags: u64) -> Result<u32> {
         if flags != 0 {
             return Err(BpfError::InvalidArgument);
@@ -108,10 +106,6 @@ impl BpfMapCommonOps for ArrayMap {
             }
         }
         Ok(total_used)
-    }
-
-    fn lookup_and_delete_elem(&mut self, _key: &[u8], _value: &mut [u8]) -> Result<()> {
-        Err(BpfError::InvalidArgument)
     }
 
     fn get_next_key(&self, key: Option<&[u8]>, next_key: &mut [u8]) -> Result<()> {
@@ -134,9 +128,22 @@ impl BpfMapCommonOps for ArrayMap {
     fn freeze(&self) -> Result<()> {
         Ok(())
     }
+
     fn map_values_ptr_range(&self) -> Result<Range<usize>> {
         let start = self.data.data.as_ptr() as usize;
         Ok(start..start + self.data.data.len())
+    }
+
+    fn map_mem_usage(&self) -> Result<usize> {
+        Ok(self.data.data.len())
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }
 
@@ -165,26 +172,45 @@ impl<T: PerCpuVariantsOps> BpfMapCommonOps for PerCpuArrayMap<T> {
     fn lookup_elem(&mut self, key: &[u8]) -> Result<Option<&[u8]>> {
         self.per_cpu_data.get_mut().lookup_elem(key)
     }
+
     fn update_elem(&mut self, key: &[u8], value: &[u8], flags: u64) -> Result<()> {
         self.per_cpu_data.get_mut().update_elem(key, value, flags)
     }
+
     fn delete_elem(&mut self, key: &[u8]) -> Result<()> {
         self.per_cpu_data.get_mut().delete_elem(key)
     }
+
     fn for_each_elem(&mut self, cb: BpfCallBackFn, ctx: *const u8, flags: u64) -> Result<u32> {
         self.per_cpu_data.get_mut().for_each_elem(cb, ctx, flags)
     }
+
     fn lookup_and_delete_elem(&mut self, _key: &[u8], _value: &mut [u8]) -> Result<()> {
         Err(BpfError::InvalidArgument)
     }
+
     fn lookup_percpu_elem(&mut self, key: &[u8], cpu: u32) -> Result<Option<&[u8]>> {
         unsafe { self.per_cpu_data.force_get_mut(cpu).lookup_elem(key) }
     }
+
     fn get_next_key(&self, key: Option<&[u8]>, next_key: &mut [u8]) -> Result<()> {
         self.per_cpu_data.get_mut().get_next_key(key, next_key)
     }
+
     fn map_values_ptr_range(&self) -> Result<Range<usize>> {
         self.per_cpu_data.get_mut().map_values_ptr_range()
+    }
+
+    fn map_mem_usage(&self) -> Result<usize> {
+        self.per_cpu_data.get().map_mem_usage()
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }
 
@@ -215,6 +241,7 @@ impl BpfMapCommonOps for PerfEventArrayMap {
         let value = self.fds.index(cpu_id);
         Ok(Some(value))
     }
+
     fn update_elem(&mut self, key: &[u8], value: &[u8], _flags: u64) -> Result<()> {
         assert_eq!(value.len(), 4);
         let cpu_id = u32::from_ne_bytes(key.try_into().map_err(|_| BpfError::InvalidArgument)?);
@@ -222,11 +249,13 @@ impl BpfMapCommonOps for PerfEventArrayMap {
         old_value.copy_from_slice(value);
         Ok(())
     }
+
     fn delete_elem(&mut self, key: &[u8]) -> Result<()> {
         let cpu_id = u32::from_ne_bytes(key.try_into().map_err(|_| BpfError::InvalidArgument)?);
         self.fds.index_mut(cpu_id).copy_from_slice(&[0; 4]);
         Ok(())
     }
+
     fn for_each_elem(&mut self, cb: BpfCallBackFn, ctx: *const u8, _flags: u64) -> Result<u32> {
         let mut total_used = 0;
         for i in 0..self.num_cpus {
@@ -240,11 +269,25 @@ impl BpfMapCommonOps for PerfEventArrayMap {
         }
         Ok(total_used)
     }
+
     fn lookup_and_delete_elem(&mut self, _key: &[u8], _value: &mut [u8]) -> Result<()> {
         Err(BpfError::NotSupported)
     }
+
     fn map_values_ptr_range(&self) -> Result<Range<usize>> {
         let start = self.fds.data.as_ptr() as usize;
         Ok(start..start + self.fds.data.len())
+    }
+
+    fn map_mem_usage(&self) -> Result<usize> {
+        Ok(self.fds.data.len())
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }

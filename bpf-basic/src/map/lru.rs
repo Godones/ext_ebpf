@@ -101,6 +101,22 @@ impl BpfMapCommonOps for LruMap {
             None => Err(BpfError::NotFound),
         }
     }
+
+    fn map_mem_usage(&self) -> Result<usize> {
+        let mut usage = 0;
+        for (k, v) in self.data.iter() {
+            usage += k.len() + v.len();
+        }
+        Ok(usage)
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
 }
 
 /// See <https://ebpf-docs.dylanreimerink.nl/linux/map-type/BPF_MAP_TYPE_LRU_PERCPU_HASH/>
@@ -126,25 +142,43 @@ impl<T: PerCpuVariantsOps> BpfMapCommonOps for PerCpuLruMap<T> {
     fn lookup_elem(&mut self, key: &[u8]) -> Result<Option<&[u8]>> {
         self.per_cpu_maps.get_mut().lookup_elem(key)
     }
+
     fn update_elem(&mut self, key: &[u8], value: &[u8], flags: u64) -> Result<()> {
         self.per_cpu_maps.get_mut().update_elem(key, value, flags)
     }
+
     fn delete_elem(&mut self, key: &[u8]) -> Result<()> {
         self.per_cpu_maps.get_mut().delete_elem(key)
     }
+
     fn for_each_elem(&mut self, cb: BpfCallBackFn, ctx: *const u8, flags: u64) -> Result<u32> {
         self.per_cpu_maps.get_mut().for_each_elem(cb, ctx, flags)
     }
+
     fn lookup_and_delete_elem(&mut self, key: &[u8], value: &mut [u8]) -> Result<()> {
         self.per_cpu_maps
             .get_mut()
             .lookup_and_delete_elem(key, value)
     }
+
     fn lookup_percpu_elem(&mut self, key: &[u8], cpu: u32) -> Result<Option<&[u8]>> {
         unsafe { self.per_cpu_maps.force_get_mut(cpu).lookup_elem(key) }
     }
+
     fn get_next_key(&self, key: Option<&[u8]>, next_key: &mut [u8]) -> Result<()> {
         self.per_cpu_maps.get_mut().get_next_key(key, next_key)
+    }
+
+    fn map_mem_usage(&self) -> Result<usize> {
+        self.per_cpu_maps.get().map_mem_usage()
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }
 
@@ -155,8 +189,8 @@ mod tests {
 
     use super::{super::tests::*, LruMap};
     use crate::{
-        map::{lru::PerCpuLruMap, BpfMapCommonOps, BpfMapMeta},
         BpfError,
+        map::{BpfMapCommonOps, BpfMapMeta, lru::PerCpuLruMap},
     };
 
     fn callback(_key: &[u8], _value: &[u8], _ctx: *const u8) -> i32 {

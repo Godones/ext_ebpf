@@ -21,6 +21,8 @@ pub trait SpecialMap: Debug + Send + Sync + 'static {
     fn pop(&mut self) -> Option<BpfQueueValue>;
     /// Returns the first element without removing it.
     fn peek(&self) -> Option<&BpfQueueValue>;
+    /// Get the memory usage of the map.
+    fn mem_usage(&self) -> Result<usize>;
 }
 
 /// The queue map type is a generic map type, resembling a FIFO (First-In First-Out) queue.
@@ -64,14 +66,24 @@ impl SpecialMap for QueueMap {
         self.data.push(value);
         Ok(())
     }
+
     fn pop(&mut self) -> Option<BpfQueueValue> {
         if self.data.is_empty() {
             return None;
         }
         Some(self.data.remove(0))
     }
+
     fn peek(&self) -> Option<&BpfQueueValue> {
         self.data.first()
+    }
+
+    fn mem_usage(&self) -> Result<usize> {
+        let mut total = 0;
+        for v in &self.data {
+            total += v.len();
+        }
+        Ok(total)
     }
 }
 /// The stack map type is a generic map type, resembling a stack data structure.
@@ -100,11 +112,17 @@ impl SpecialMap for StackMap {
         self.0.data.push(value);
         Ok(())
     }
+
     fn pop(&mut self) -> Option<BpfQueueValue> {
         self.0.data.pop()
     }
+
     fn peek(&self) -> Option<&BpfQueueValue> {
         self.0.data.last()
+    }
+
+    fn mem_usage(&self) -> Result<usize> {
+        self.0.mem_usage()
     }
 }
 
@@ -113,11 +131,13 @@ impl<T: SpecialMap> BpfMapCommonOps for T {
     fn lookup_elem(&mut self, _key: &[u8]) -> Result<Option<&[u8]>> {
         Ok(self.peek().map(|v| v.as_slice()))
     }
+
     /// Equal to QueueMap::push
     fn update_elem(&mut self, _key: &[u8], value: &[u8], flags: u64) -> Result<()> {
         let flag = BpfMapUpdateElemFlags::from_bits_truncate(flags);
         self.push(value.to_vec(), flag)
     }
+
     /// Equal to QueueMap::pop
     fn lookup_and_delete_elem(&mut self, _key: &[u8], value: &mut [u8]) -> Result<()> {
         if let Some(v) = self.pop() {
@@ -127,15 +147,30 @@ impl<T: SpecialMap> BpfMapCommonOps for T {
             Err(BpfError::NotFound)
         }
     }
+
     fn push_elem(&mut self, value: &[u8], flags: u64) -> Result<()> {
         self.update_elem(&[], value, flags)
     }
+
     fn pop_elem(&mut self, value: &mut [u8]) -> Result<()> {
         self.lookup_and_delete_elem(&[], value)
     }
+
     fn peek_elem(&self, value: &mut [u8]) -> Result<()> {
         self.peek()
             .map(|v| value.copy_from_slice(v))
             .ok_or(BpfError::NotFound)
+    }
+
+    fn map_mem_usage(&self) -> Result<usize> {
+        self.mem_usage()
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }

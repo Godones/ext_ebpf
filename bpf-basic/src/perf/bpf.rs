@@ -1,10 +1,13 @@
+//! BPF performance event handling module.
+//!
 use core::any::Any;
 
 use super::util::{PerfProbeArgs, *};
-use crate::{linux_bpf::*, BpfError, Result};
+use crate::{BpfError, Result, linux_bpf::*};
 
 const PAGE_SIZE: usize = 4096;
 
+/// Ring buffer page for perf events.
 #[derive(Debug)]
 pub struct RingPage {
     size: usize,
@@ -14,6 +17,7 @@ pub struct RingPage {
 }
 
 impl RingPage {
+    /// Create an empty RingPage.
     pub fn empty() -> Self {
         RingPage {
             ptr: 0,
@@ -23,10 +27,12 @@ impl RingPage {
         }
     }
 
+    /// Get the start address of the RingPage.
     pub fn start(&self) -> usize {
         self.ptr
     }
 
+    /// Initialize a RingPage from start address and length.
     pub fn new_init(start: usize, len: usize) -> Self {
         Self::init(start as _, len)
     }
@@ -59,6 +65,7 @@ impl RingPage {
         data_size <= capacity
     }
 
+    /// Write a perf event to the ring buffer.
     pub fn write_event(&mut self, data: &[u8]) -> Result<()> {
         let data_tail = unsafe { &mut (*(self.ptr as *mut perf_event_mmap_page)).data_tail };
         let data_head = unsafe { &mut (*(self.ptr as *mut perf_event_mmap_page)).data_head };
@@ -185,28 +192,33 @@ impl RingPage {
         Ok(data_head + size_of::<LostSamples>() + fill_size)
     }
 
+    /// Whether the ring buffer is readable.
     pub fn readable(&self) -> bool {
         let data_tail = unsafe { &(*(self.ptr as *mut perf_event_mmap_page)).data_tail };
         let data_head = unsafe { &(*(self.ptr as *mut perf_event_mmap_page)).data_head };
         data_tail != data_head
     }
 
+    /// Get the ring buffer as a slice.
     #[allow(dead_code)]
     pub fn as_slice(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.ptr as *const u8, self.size) }
     }
 
+    /// Get the ring buffer as a mutable slice.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { core::slice::from_raw_parts_mut(self.ptr as *mut u8, self.size) }
     }
 }
 
+/// BPF performance event structure.
 #[derive(Debug)]
 pub struct BpfPerfEvent {
     _args: PerfProbeArgs,
     data: BpfPerfEventData,
 }
 
+/// Data for BPF performance event.
 #[derive(Debug)]
 pub struct BpfPerfEventData {
     enabled: bool,
@@ -215,6 +227,7 @@ pub struct BpfPerfEventData {
 }
 
 impl BpfPerfEvent {
+    /// Create a new BpfPerfEvent.
     pub fn new(args: PerfProbeArgs) -> Self {
         BpfPerfEvent {
             _args: args,

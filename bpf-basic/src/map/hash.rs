@@ -1,8 +1,8 @@
 use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 
 use super::{
-    round_up, BpfCallBackFn, BpfMapCommonOps, BpfMapMeta, BpfMapUpdateElemFlags, PerCpuVariants,
-    PerCpuVariantsOps,
+    BpfCallBackFn, BpfMapCommonOps, BpfMapMeta, BpfMapUpdateElemFlags, PerCpuVariants,
+    PerCpuVariantsOps, round_up,
 };
 use crate::{BpfError, Result};
 type BpfHashMapKey = Vec<u8>;
@@ -41,15 +41,18 @@ impl BpfMapCommonOps for BpfHashMap {
         let value = self.data.get(key).map(|v| v.as_slice());
         Ok(value)
     }
+
     fn update_elem(&mut self, key: &[u8], value: &[u8], flags: u64) -> Result<()> {
         let _flags = BpfMapUpdateElemFlags::from_bits_truncate(flags);
         self.data.insert(key.to_vec(), value.to_vec());
         Ok(())
     }
+
     fn delete_elem(&mut self, key: &[u8]) -> Result<()> {
         self.data.remove(key);
         Ok(())
     }
+
     fn for_each_elem(&mut self, cb: BpfCallBackFn, ctx: *const u8, flags: u64) -> Result<u32> {
         if flags != 0 {
             return Err(BpfError::InvalidArgument);
@@ -65,6 +68,7 @@ impl BpfMapCommonOps for BpfHashMap {
         }
         Ok(total_used)
     }
+
     fn lookup_and_delete_elem(&mut self, key: &[u8], value: &mut [u8]) -> Result<()> {
         let v = self
             .data
@@ -75,6 +79,7 @@ impl BpfMapCommonOps for BpfHashMap {
         self.data.remove(key);
         Ok(())
     }
+
     fn get_next_key(&self, key: Option<&[u8]>, next_key: &mut [u8]) -> Result<()> {
         let mut iter = self.data.iter();
         if let Some(key) = key {
@@ -92,6 +97,22 @@ impl BpfMapCommonOps for BpfHashMap {
             }
             None => Err(BpfError::NotFound),
         }
+    }
+
+    fn map_mem_usage(&self) -> Result<usize> {
+        let mut usage = 0;
+        for (k, v) in self.data.iter() {
+            usage += k.len() + v.len();
+        }
+        Ok(usage)
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }
 
@@ -119,24 +140,42 @@ impl<T: PerCpuVariantsOps> BpfMapCommonOps for PerCpuHashMap<T> {
     fn lookup_elem(&mut self, key: &[u8]) -> Result<Option<&[u8]>> {
         self.per_cpu_maps.get_mut().lookup_elem(key)
     }
+
     fn update_elem(&mut self, key: &[u8], value: &[u8], flags: u64) -> Result<()> {
         self.per_cpu_maps.get_mut().update_elem(key, value, flags)
     }
+
     fn delete_elem(&mut self, key: &[u8]) -> Result<()> {
         self.per_cpu_maps.get_mut().delete_elem(key)
     }
+
     fn for_each_elem(&mut self, cb: BpfCallBackFn, ctx: *const u8, flags: u64) -> Result<u32> {
         self.per_cpu_maps.get_mut().for_each_elem(cb, ctx, flags)
     }
+
     fn lookup_and_delete_elem(&mut self, key: &[u8], value: &mut [u8]) -> Result<()> {
         self.per_cpu_maps
             .get_mut()
             .lookup_and_delete_elem(key, value)
     }
+
     fn lookup_percpu_elem(&mut self, key: &[u8], cpu: u32) -> Result<Option<&[u8]>> {
         unsafe { self.per_cpu_maps.force_get_mut(cpu).lookup_elem(key) }
     }
+
     fn get_next_key(&self, key: Option<&[u8]>, next_key: &mut [u8]) -> Result<()> {
         self.per_cpu_maps.get_mut().get_next_key(key, next_key)
+    }
+
+    fn map_mem_usage(&self) -> Result<usize> {
+        self.per_cpu_maps.get().map_mem_usage()
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }

@@ -1,3 +1,10 @@
+//! Basic eBPF library providing essential functionalities for eBPF programs.
+//!! This library includes support for BPF maps, helper functions, and program
+//! loading mechanisms, making it easier to develop and run eBPF programs in a
+//! kernel-like environment.
+//!
+
+#![deny(missing_docs)]
 #![no_std]
 #![feature(c_variadic)]
 #![allow(unused)]
@@ -15,14 +22,30 @@ pub mod raw_tracepoint;
 
 pub use preprocessor::EBPFPreProcessor;
 
+/// A specialized `Result` type for BPF operations.
 pub type Result<T> = core::result::Result<T, BpfError>;
 
+/// BPF-related error codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BpfError {
-    InvalidArgument,
-    NotSupported,
-    NotFound,
-    NoSpace,
+    /// Resource not found.
+    NotFound = 2,
+    /// Argument too large.
+    TooBig = 7,
+    /// Resource temporarily unavailable.
+    TryAgain = 11,
+    /// Invalid argument.
+    InvalidArgument = 22,
+    /// No memory space left.
+    NoSpace = 28,
+    /// Operation not supported.
+    NotSupported = 95,
+}
+
+impl From<BpfError> for i64 {
+    fn from(val: BpfError) -> Self {
+        -(val as i64)
+    }
 }
 
 impl core::fmt::Display for BpfError {
@@ -32,6 +55,8 @@ impl core::fmt::Display for BpfError {
             BpfError::NotSupported => write!(f, "Not supported"),
             BpfError::NotFound => write!(f, "Not found"),
             BpfError::NoSpace => write!(f, "No space"),
+            BpfError::TryAgain => write!(f, "Try again"),
+            BpfError::TooBig => write!(f, "Too big"),
         }
     }
 }
@@ -39,7 +64,7 @@ impl core::error::Error for BpfError {}
 
 /// The KernelAuxiliaryOps trait provides auxiliary operations which should
 /// be implemented by the kernel or a kernel-like environment.
-pub trait KernelAuxiliaryOps {
+pub trait KernelAuxiliaryOps: Send + Sync + 'static {
     /// Get a unified map from a pointer.
     fn get_unified_map_from_ptr<F, R>(ptr: *const u8, func: F) -> Result<R>
     where
@@ -67,6 +92,70 @@ pub trait KernelAuxiliaryOps {
     fn string_from_user_cstr(ptr: *const u8) -> Result<String>;
     /// For ebpf print helper functions
     fn ebpf_write_str(str: &str) -> Result<()>;
-    // For ebpf ktime helper functions
+    /// For ebpf ktime helper functions
     fn ebpf_time_ns() -> Result<u64>;
+
+    /// Allocate pages in kernel space. Return the physical address of the allocated page.
+    fn alloc_page() -> Result<usize>;
+    /// Free the allocated page in kernel space.
+    fn free_page(phys_addr: usize);
+    /// Create a virtual mapping for the given physical addresses. Return the virtual address.
+    fn vmap(phys_addrs: &[usize]) -> Result<usize>;
+}
+
+struct DummyAuxImpl;
+impl KernelAuxiliaryOps for DummyAuxImpl {
+    fn get_unified_map_from_ptr<F, R>(_ptr: *const u8, _func: F) -> Result<R>
+    where
+        F: FnOnce(&mut UnifiedMap) -> Result<R>,
+    {
+        Err(BpfError::NotSupported)
+    }
+
+    fn get_unified_map_from_fd<F, R>(_map_fd: u32, _func: F) -> Result<R>
+    where
+        F: FnOnce(&mut UnifiedMap) -> Result<R>,
+    {
+        Err(BpfError::NotSupported)
+    }
+
+    fn get_unified_map_ptr_from_fd(_map_fd: u32) -> Result<*const u8> {
+        Err(BpfError::NotSupported)
+    }
+
+    fn copy_from_user(_src: *const u8, _size: usize, _dst: &mut [u8]) -> Result<()> {
+        Err(BpfError::NotSupported)
+    }
+
+    fn copy_to_user(_dest: *mut u8, _size: usize, _src: &[u8]) -> Result<()> {
+        Err(BpfError::NotSupported)
+    }
+
+    fn current_cpu_id() -> u32 {
+        0
+    }
+    fn perf_event_output(
+        _ctx: *mut core::ffi::c_void,
+        _fd: u32,
+        _flags: u32,
+        _data: &[u8],
+    ) -> Result<()> {
+        Err(BpfError::NotSupported)
+    }
+    fn string_from_user_cstr(_ptr: *const u8) -> Result<String> {
+        Err(BpfError::NotSupported)
+    }
+    fn ebpf_write_str(_str: &str) -> Result<()> {
+        Err(BpfError::NotSupported)
+    }
+    fn ebpf_time_ns() -> Result<u64> {
+        Err(BpfError::NotSupported)
+    }
+    fn alloc_page() -> Result<usize> {
+        Err(BpfError::NotSupported)
+    }
+    fn free_page(_phys_addr: usize) {}
+    fn vmap(_phys_addrs: &[usize]) -> Result<usize> {
+        Err(BpfError::NotSupported)
+    }
 }

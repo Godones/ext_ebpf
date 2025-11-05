@@ -1,3 +1,4 @@
+//! Metadata and verifier info for BPF programs.
 use alloc::{
     string::{String, ToString},
     vec,
@@ -6,16 +7,25 @@ use alloc::{
 use core::{ffi::CStr, fmt::Debug};
 
 use crate::{
-    linux_bpf::{bpf_attach_type, bpf_attr, bpf_prog_type},
     BpfError, KernelAuxiliaryOps, Result,
+    linux_bpf::{bpf_attach_type, bpf_attr, bpf_prog_type},
 };
+
+/// Metadata for a BPF program.
 pub struct BpfProgMeta {
+    /// Program flags.
     pub prog_flags: u32,
+    /// Program type.
     pub prog_type: bpf_prog_type,
+    /// Expected attach type.
     pub expected_attach_type: bpf_attach_type,
+    /// eBPF instructions.
     pub insns: Option<Vec<u8>>,
+    /// License string.
     pub license: String,
+    /// Kernel version.
     pub kern_version: u32,
+    /// Program name.
     pub name: String,
 }
 
@@ -39,9 +49,12 @@ impl Debug for BpfProgMeta {
 }
 
 impl BpfProgMeta {
+    /// Take the instructions out of the metadata.
     pub fn take_insns(&mut self) -> Option<Vec<u8>> {
         self.insns.take()
     }
+
+    /// Try to create a `BpfProgMeta` from a `bpf_attr` structure.
     pub fn try_from_bpf_attr<F: KernelAuxiliaryOps>(attr: &bpf_attr) -> Result<Self> {
         let u = unsafe { &attr.__bindgen_anon_3 };
         let prog_type =
@@ -87,6 +100,8 @@ impl BpfProgMeta {
 }
 
 bitflags::bitflags! {
+
+    /// The log level for BPF program verifier.
     #[derive(Debug, Clone, Copy)]
     pub struct VerifierLogLevel: u32 {
         /// Sets no verifier logging.
@@ -100,6 +115,7 @@ bitflags::bitflags! {
     }
 }
 
+/// BPF program verifier information.
 #[derive(Debug)]
 pub struct BpfProgVerifierInfo {
     /// This attribute specifies the level/detail of the log output. Valid values are.
