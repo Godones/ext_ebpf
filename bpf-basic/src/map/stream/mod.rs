@@ -18,6 +18,13 @@ impl<F: KernelAuxiliaryOps> InnerPage<F> {
         })
     }
 
+    pub fn from_addr(addr: usize) -> Self {
+        InnerPage {
+            addr,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+
     pub fn phys_addr(&self) -> usize {
         self.addr
     }

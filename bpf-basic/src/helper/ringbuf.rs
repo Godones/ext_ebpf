@@ -5,7 +5,7 @@ use core::{
 };
 
 use crate::{
-    BpfError, KernelAuxiliaryOps, Result,
+    BpfError, KernelAuxiliaryOps, PollWaker, Result,
     map::{
         BpfCallBackFn, UnifiedMap,
         stream::{BpfDynPtr, BpfDynptrType, RingBufMap, ringbuf::RingBuf},

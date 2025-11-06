@@ -9,12 +9,13 @@ pub(crate) mod stream;
 use alloc::{
     boxed::Box,
     string::{String, ToString},
+    sync::Arc,
     vec,
 };
 use core::{any::Any, ffi::CStr, fmt::Debug, ops::Range};
 
 use crate::{
-    BpfError, KernelAuxiliaryOps, Result,
+    BpfError, KernelAuxiliaryOps, PollWaker, Result,
     linux_bpf::{BpfMapType, bpf_attr},
     map::flags::BpfMapCreateFlags,
 };
@@ -234,7 +235,10 @@ impl UnifiedMap {
 /// is automatically enabled for the new file descriptor.
 ///
 /// See <https://ebpf-docs.dylanreimerink.nl/linux/syscall/BPF_MAP_CREATE/>
-pub fn bpf_map_create<T: PerCpuVariantsOps + 'static>(map_meta: BpfMapMeta) -> Result<UnifiedMap> {
+pub fn bpf_map_create<F: KernelAuxiliaryOps, T: PerCpuVariantsOps + 'static>(
+    map_meta: BpfMapMeta,
+    poll_waker: Option<Arc<dyn PollWaker>>,
+) -> Result<UnifiedMap> {
     log::info!("The map attr is {:#?}", map_meta);
     let map: Box<dyn BpfMapCommonOps> = match map_meta.map_type {
         BpfMapType::BPF_MAP_TYPE_ARRAY => {
@@ -279,6 +283,11 @@ pub fn bpf_map_create<T: PerCpuVariantsOps + 'static>(map_meta: BpfMapMeta) -> R
         BpfMapType::BPF_MAP_TYPE_LRU_PERCPU_HASH => {
             let lru_per_cpu_hash_map = lru::PerCpuLruMap::<T>::new(&map_meta)?;
             Box::new(lru_per_cpu_hash_map)
+        }
+        BpfMapType::BPF_MAP_TYPE_RINGBUF => {
+            let poll_waker = poll_waker.ok_or(BpfError::InvalidArgument)?;
+            let ringbuf_map = stream::RingBufMap::<F>::new(&map_meta, poll_waker)?;
+            Box::new(ringbuf_map)
         }
         _ => {
             unimplemented!("bpf map type {:?} not implemented", map_meta.map_type)

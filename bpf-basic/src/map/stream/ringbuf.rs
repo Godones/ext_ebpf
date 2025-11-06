@@ -2,7 +2,7 @@
 //! See <https://elixir.bootlin.com/linux/v6.6/source/kernel/bpf/ringbuf.c>
 //!
 //! See <https://docs.ebpf.io/linux/map-type/BPF_MAP_TYPE_RINGBUF/>
-use alloc::{vec, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
     arch,
     fmt::Debug,
@@ -12,7 +12,7 @@ use core::{
 };
 
 use crate::{
-    BpfError, KernelAuxiliaryOps, Result,
+    BpfError, KernelAuxiliaryOps, PollWaker, Result,
     helper::ringbuf::BpfRingbufFlags,
     map::{BpfMapCommonOps, BpfMapMeta, flags::BpfMapCreateFlags, stream::InnerPage},
 };
@@ -29,31 +29,6 @@ const BPF_RINGBUF_BUSY_BIT: u32 = 1 << 31;
 const BPF_RINGBUF_DISCARD_BIT: u32 = 1 << 30;
 const BPF_RINGBUF_HDR_SZ: u32 = core::mem::size_of::<BpfRingBufHdr>() as u32;
 
-pub struct RingBufMap<F: KernelAuxiliaryOps> {
-    ringbuf: &'static mut RingBuf<F>,
-}
-
-impl<F: KernelAuxiliaryOps> Debug for RingBufMap<F> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("RingBufMap")
-            .field("ringbuf", &self.ringbuf)
-            .finish()
-    }
-}
-
-impl<F: KernelAuxiliaryOps> Deref for RingBufMap<F> {
-    type Target = RingBuf<F>;
-    fn deref(&self) -> &Self::Target {
-        self.ringbuf
-    }
-}
-
-impl<F: KernelAuxiliaryOps> DerefMut for RingBufMap<F> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.ringbuf
-    }
-}
-
 #[repr(align(4096))]
 struct AlignedPos(u64);
 
@@ -62,6 +37,7 @@ pub struct RingBuf<F: KernelAuxiliaryOps> {
     nr_pages: u32,
     mask: u64,
     pages: &'static [InnerPage<F>],
+    poll_waker: Arc<dyn PollWaker>,
     /* For user-space producer ring buffers, an atomic_t busy bit is used
      * to synchronize access to the ring buffers in the kernel, rather than
      * the spinlock that is used for kernel-producer ring buffers. This is
@@ -126,7 +102,8 @@ pub struct BpfRingBufHdr {
 }
 
 impl<F: KernelAuxiliaryOps> RingBuf<F> {
-    pub fn new(map_meta: &BpfMapMeta) -> Result<&'static Self> {
+    /// Create a new RingBuf.
+    pub fn new(map_meta: &BpfMapMeta, poll_waker: Arc<dyn PollWaker>) -> Result<&'static mut Self> {
         if map_meta.map_flags != RINGBUF_CREATE_FLAG_MASK {
             return Err(BpfError::InvalidArgument);
         }
@@ -182,6 +159,7 @@ impl<F: KernelAuxiliaryOps> RingBuf<F> {
 
         ringbuf.mask = (map_meta.max_entries - 1) as u64;
         ringbuf.nr_pages = nr_pages as u32;
+        ringbuf.poll_waker = poll_waker;
         ringbuf.consumer_pos = AlignedPos(0);
         ringbuf.producer_pos = AlignedPos(0);
         ringbuf.busy = AtomicBool::new(false);
@@ -324,11 +302,13 @@ impl<F: KernelAuxiliaryOps> RingBuf<F> {
         let cons_pos = ringbuf.consumer_pos() & ringbuf.mask;
 
         if flags.contains(BpfRingbufFlags::FORCE_WAKEUP) {
-            // TODO: implement notification mechanism
-            unimplemented!()
-        } else if (cons_pos == rec_pos) && !flags.contains(BpfRingbufFlags::NO_WAKEUP) {
-            // TODO: implement notification mechanism
-            unimplemented!()
+            ringbuf.poll_waker.wake_up();
+            return Ok(());
+        }
+
+        if (cons_pos == rec_pos) && !flags.contains(BpfRingbufFlags::NO_WAKEUP) {
+            ringbuf.poll_waker.wake_up();
+            return Ok(());
         }
 
         Ok(())
@@ -339,6 +319,31 @@ impl<F: KernelAuxiliaryOps> RingBuf<F> {
         let prod_pos = self.producer_pos();
         let cons_pos = self.consumer_pos();
         prod_pos - cons_pos
+    }
+}
+
+pub struct RingBufMap<F: KernelAuxiliaryOps> {
+    ringbuf: &'static mut RingBuf<F>,
+}
+
+impl<F: KernelAuxiliaryOps> Debug for RingBufMap<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RingBufMap")
+            .field("ringbuf", &self.ringbuf)
+            .finish()
+    }
+}
+
+impl<F: KernelAuxiliaryOps> Deref for RingBufMap<F> {
+    type Target = RingBuf<F>;
+    fn deref(&self) -> &Self::Target {
+        self.ringbuf
+    }
+}
+
+impl<F: KernelAuxiliaryOps> DerefMut for RingBufMap<F> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.ringbuf
     }
 }
 
@@ -353,5 +358,22 @@ impl<F: KernelAuxiliaryOps> BpfMapCommonOps for RingBufMap<F> {
 
     fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
         self
+    }
+}
+
+impl<F: KernelAuxiliaryOps> RingBufMap<F> {
+    /// Create a new RingBufMap.
+    pub fn new(map_meta: &BpfMapMeta, poll_waker: Arc<dyn PollWaker>) -> Result<Self> {
+        let ringbuf = RingBuf::<F>::new(map_meta, poll_waker)?;
+        Ok(RingBufMap { ringbuf })
+    }
+}
+
+impl<F: KernelAuxiliaryOps> Drop for RingBufMap<F> {
+    fn drop(&mut self) {
+        // Unmap the pages.
+        for page in self.ringbuf.pages {
+            InnerPage::<F>::from_addr(page.phys_addr());
+        }
     }
 }

@@ -62,6 +62,12 @@ impl core::fmt::Display for BpfError {
 }
 impl core::error::Error for BpfError {}
 
+/// PollWaiter trait for maps that support polling.
+pub trait PollWaker: Send + Sync {
+    /// Wake up any waiters on the map.
+    fn wake_up(&self);
+}
+
 /// The KernelAuxiliaryOps trait provides auxiliary operations which should
 /// be implemented by the kernel or a kernel-like environment.
 pub trait KernelAuxiliaryOps: Send + Sync + 'static {
