@@ -11,6 +11,7 @@ use alloc::{
     string::{String, ToString},
     sync::Arc,
     vec,
+    vec::Vec,
 };
 use core::{any::Any, ffi::CStr, fmt::Debug, ops::Range};
 
@@ -104,6 +105,21 @@ pub trait BpfMapCommonOps: Send + Sync + Debug + Any {
 
     /// Get the memory usage of the map.
     fn map_mem_usage(&self) -> Result<usize>;
+
+    /// Memory map the map into user space. Return the physical address.
+    fn map_mmap(&self, offset: usize, size: usize, read: bool, write: bool) -> Result<Vec<usize>> {
+        Err(BpfError::NotSupported)
+    }
+
+    /// Whether the map is readable.
+    fn readable(&self) -> bool {
+        false
+    }
+
+    /// Whether the map is writable.
+    fn writable(&self) -> bool {
+        false
+    }
 
     /// Get a reference to the map as `Any`.
     fn as_any(&self) -> &dyn Any;
@@ -286,6 +302,7 @@ pub fn bpf_map_create<F: KernelAuxiliaryOps, T: PerCpuVariantsOps + 'static>(
         }
         BpfMapType::BPF_MAP_TYPE_RINGBUF => {
             let poll_waker = poll_waker.ok_or(BpfError::InvalidArgument)?;
+            log::warn!("The ringbuf map attr is {:#?}", map_meta);
             let ringbuf_map = stream::RingBufMap::<F>::new(&map_meta, poll_waker)?;
             Box::new(ringbuf_map)
         }

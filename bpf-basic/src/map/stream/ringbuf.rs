@@ -8,6 +8,7 @@ use core::{
     fmt::Debug,
     mem::offset_of,
     ops::{Deref, DerefMut},
+    ptr::NonNull,
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering},
 };
 
@@ -19,10 +20,13 @@ use crate::{
 
 const RINGBUF_CREATE_FLAG_MASK: BpfMapCreateFlags = BpfMapCreateFlags::NUMA_NODE;
 /// consumer page and producer page
+const RINGBUF_PGOFF: usize = offset_of!(RingBuf<crate::DummyAuxImpl>, consumer_pos) >> 12;
 const RINGBUF_POS_PAGES: usize = 2;
-const RINGBUF_NR_META_PAGES: usize = offset_of!(RingBuf<crate::DummyAuxImpl>, consumer_pos) >> 12;
+const RINGBUF_NR_META_PAGES: usize = RINGBUF_PGOFF + RINGBUF_POS_PAGES;
 const RINGBUF_MAX_RECORD_SZ: u32 = u32::MAX / 4;
 const PAGE_SHIFT: u32 = 12;
+
+const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 
 /// BPF ring buffer constants
 const BPF_RINGBUF_BUSY_BIT: u32 = 1 << 31;
@@ -37,7 +41,10 @@ pub struct RingBuf<F: KernelAuxiliaryOps> {
     nr_pages: u32,
     mask: u64,
     pages: &'static [InnerPage<F>],
-    poll_waker: Arc<dyn PollWaker>,
+    phys_addrs: &'static [usize],
+    // we can't directly use Arc<dyn PollWaker> here because RingBuf is
+    // created in a special way (with vmap), so we store a raw pointer.
+    poll_waker: *const dyn PollWaker,
     /* For user-space producer ring buffers, an atomic_t busy bit is used
      * to synchronize access to the ring buffers in the kernel, rather than
      * the spinlock that is used for kernel-producer ring buffers. This is
@@ -82,6 +89,9 @@ pub struct RingBuf<F: KernelAuxiliaryOps> {
     _marker: core::marker::PhantomData<F>,
 }
 
+unsafe impl<F: KernelAuxiliaryOps> Send for RingBuf<F> {}
+unsafe impl<F: KernelAuxiliaryOps> Sync for RingBuf<F> {}
+
 impl<F: KernelAuxiliaryOps> Debug for RingBuf<F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("RingBuf")
@@ -104,7 +114,7 @@ pub struct BpfRingBufHdr {
 impl<F: KernelAuxiliaryOps> RingBuf<F> {
     /// Create a new RingBuf.
     pub fn new(map_meta: &BpfMapMeta, poll_waker: Arc<dyn PollWaker>) -> Result<&'static mut Self> {
-        if map_meta.map_flags != RINGBUF_CREATE_FLAG_MASK {
+        if !(map_meta.map_flags & !RINGBUF_CREATE_FLAG_MASK).is_empty() {
             return Err(BpfError::InvalidArgument);
         }
         if map_meta.key_size != 0
@@ -115,7 +125,7 @@ impl<F: KernelAuxiliaryOps> RingBuf<F> {
             return Err(BpfError::InvalidArgument);
         }
 
-        let nr_meta_pages = RINGBUF_NR_META_PAGES + RINGBUF_POS_PAGES;
+        let nr_meta_pages = RINGBUF_NR_META_PAGES;
         let nr_data_pages = (map_meta.max_entries >> PAGE_SHIFT) as usize;
 
         let nr_pages = nr_meta_pages + nr_data_pages;
@@ -141,6 +151,12 @@ impl<F: KernelAuxiliaryOps> RingBuf<F> {
         let mut pages = Vec::with_capacity(nr_pages);
         let mut phys_addrs = vec![0usize; nr_meta_pages + 2 * nr_data_pages];
 
+        log::warn!(
+            "Creating ringbuf with {} pages ({} meta pages, {} data pages)",
+            nr_pages,
+            nr_meta_pages,
+            nr_data_pages
+        );
         /*
          * [meta1] [meta2] [data1 | data2 | ... ] [data1 | data2 | ... ]
          */
@@ -159,14 +175,22 @@ impl<F: KernelAuxiliaryOps> RingBuf<F> {
 
         ringbuf.mask = (map_meta.max_entries - 1) as u64;
         ringbuf.nr_pages = nr_pages as u32;
-        ringbuf.poll_waker = poll_waker;
+        ringbuf.phys_addrs = phys_addrs.leak();
+
+        let waker_ptr: *const dyn PollWaker = Arc::into_raw(poll_waker);
+        ringbuf.poll_waker = waker_ptr;
         ringbuf.consumer_pos = AlignedPos(0);
         ringbuf.producer_pos = AlignedPos(0);
         ringbuf.busy = AtomicBool::new(false);
+
         ringbuf.pages = pages.leak();
         ringbuf._marker = core::marker::PhantomData;
 
         Ok(ringbuf)
+    }
+
+    fn waker(&self) -> &dyn PollWaker {
+        unsafe { &*self.poll_waker }
     }
 
     fn map_mem_usage(&self) -> Result<usize> {
@@ -258,7 +282,7 @@ impl<F: KernelAuxiliaryOps> RingBuf<F> {
 
         let data_buf = Self::data_buf(
             &self.data_pos as *const AlignedPos as usize,
-            self.total_data_size() as usize,
+            self.total_data_size() as usize * 2,
         );
 
         let hdr_buf = &mut data_buf[prod_idx..prod_idx + BPF_RINGBUF_HDR_SZ as usize];
@@ -302,12 +326,12 @@ impl<F: KernelAuxiliaryOps> RingBuf<F> {
         let cons_pos = ringbuf.consumer_pos() & ringbuf.mask;
 
         if flags.contains(BpfRingbufFlags::FORCE_WAKEUP) {
-            ringbuf.poll_waker.wake_up();
+            ringbuf.waker().wake_up();
             return Ok(());
         }
 
         if (cons_pos == rec_pos) && !flags.contains(BpfRingbufFlags::NO_WAKEUP) {
-            ringbuf.poll_waker.wake_up();
+            ringbuf.waker().wake_up();
             return Ok(());
         }
 
@@ -359,6 +383,20 @@ impl<F: KernelAuxiliaryOps> BpfMapCommonOps for RingBufMap<F> {
     fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
         self
     }
+
+    fn map_mmap(&self, offset: usize, size: usize, read: bool, write: bool) -> Result<Vec<usize>> {
+        let offset = offset + (RINGBUF_PGOFF << PAGE_SHIFT);
+        let page_idx = offset >> PAGE_SHIFT;
+        let range = size >> PAGE_SHIFT;
+        let phys_addrs = self.ringbuf.phys_addrs[page_idx..page_idx + range].to_vec();
+        Ok(phys_addrs)
+    }
+
+    fn readable(&self) -> bool {
+        let prod_pos = self.producer_pos();
+        let cons_pos = self.consumer_pos();
+        prod_pos != cons_pos
+    }
 }
 
 impl<F: KernelAuxiliaryOps> RingBufMap<F> {
@@ -371,9 +409,35 @@ impl<F: KernelAuxiliaryOps> RingBufMap<F> {
 
 impl<F: KernelAuxiliaryOps> Drop for RingBufMap<F> {
     fn drop(&mut self) {
+        let pages = unsafe {
+            Vec::from_raw_parts(
+                self.ringbuf.pages.as_ptr() as *mut InnerPage<F>,
+                self.ringbuf.nr_pages as usize,
+                self.ringbuf.nr_pages as usize,
+            )
+        };
+
+        let waker = unsafe { Arc::from_raw(self.ringbuf.poll_waker) };
+
+        let nr_meta_pages = RINGBUF_NR_META_PAGES;
+        let nr_data_pages = self.ringbuf.total_data_size() as usize >> PAGE_SHIFT;
+
+        let phys_pages = nr_meta_pages + 2 * nr_data_pages;
+
+        let phys_addrs = unsafe {
+            Vec::from_raw_parts(
+                self.ringbuf.phys_addrs.as_ptr() as *mut usize,
+                phys_pages,
+                phys_pages,
+            )
+        };
         // Unmap the pages.
-        for page in self.ringbuf.pages {
-            InnerPage::<F>::from_addr(page.phys_addr());
-        }
+        F::unmap(self.ringbuf as *mut RingBuf<F> as usize);
+
+        drop(phys_addrs);
+        drop(pages);
+        drop(waker);
+
+        log::warn!("RingBufMap dropped");
     }
 }

@@ -75,7 +75,9 @@ impl PerfProbeArgs {
     ) -> Result<Self> {
         let ty = perf_type_id::try_from(attr.type_).map_err(|_| BpfError::InvalidArgument)?;
         let config = match ty {
-            perf_type_id::PERF_TYPE_TRACEPOINT => PerfProbeConfig::Raw(attr.config),
+            perf_type_id::PERF_TYPE_MAX | perf_type_id::PERF_TYPE_TRACEPOINT => {
+                PerfProbeConfig::Raw(attr.config)
+            }
             _ => {
                 let sw_id = perf_sw_ids::try_from(attr.config as u32)
                     .map_err(|_| BpfError::InvalidArgument)?;

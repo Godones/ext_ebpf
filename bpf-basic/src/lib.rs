@@ -107,6 +107,8 @@ pub trait KernelAuxiliaryOps: Send + Sync + 'static {
     fn free_page(phys_addr: usize);
     /// Create a virtual mapping for the given physical addresses. Return the virtual address.
     fn vmap(phys_addrs: &[usize]) -> Result<usize>;
+    /// Unmap the given virtual address.
+    fn unmap(vaddr: usize);
 }
 
 struct DummyAuxImpl;
@@ -140,6 +142,7 @@ impl KernelAuxiliaryOps for DummyAuxImpl {
     fn current_cpu_id() -> u32 {
         0
     }
+
     fn perf_event_output(
         _ctx: *mut core::ffi::c_void,
         _fd: u32,
@@ -148,20 +151,28 @@ impl KernelAuxiliaryOps for DummyAuxImpl {
     ) -> Result<()> {
         Err(BpfError::NotSupported)
     }
+
     fn string_from_user_cstr(_ptr: *const u8) -> Result<String> {
         Err(BpfError::NotSupported)
     }
+
     fn ebpf_write_str(_str: &str) -> Result<()> {
         Err(BpfError::NotSupported)
     }
+
     fn ebpf_time_ns() -> Result<u64> {
         Err(BpfError::NotSupported)
     }
+
     fn alloc_page() -> Result<usize> {
         Err(BpfError::NotSupported)
     }
+
     fn free_page(_phys_addr: usize) {}
+
     fn vmap(_phys_addrs: &[usize]) -> Result<usize> {
         Err(BpfError::NotSupported)
     }
+
+    fn unmap(_vaddr: usize) {}
 }
