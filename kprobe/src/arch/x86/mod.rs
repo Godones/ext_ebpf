@@ -244,6 +244,9 @@ impl PtRegs {
     }
 }
 
+const KERNEL_DS: usize = 24; // Kernel data segment selector
+
+/// See <https://elixir.bootlin.com/linux/v6.6/source/arch/x86/kernel/rethook.c#L62>
 #[unsafe(naked)]
 pub(crate) unsafe extern "C" fn arch_rethook_trampoline<
     L: RawMutex + 'static,
@@ -251,8 +254,9 @@ pub(crate) unsafe extern "C" fn arch_rethook_trampoline<
 >() {
     core::arch::naked_asm!(
         // Push a fake return address to tell the unwinder it's a kretprobe.
-        "pushq 0",
-        "pushq {kernel_data_segment}", // fake ss
+        // TODO: Use the real return address later.
+        "pushq $0",
+        "pushq ${kernel_data_segment}", // fake ss
         // Save the 'sp - 16', this will be fixed later.
         "pushq %rsp",
         "pushfq", // rflags
@@ -275,7 +279,7 @@ pub(crate) unsafe extern "C" fn arch_rethook_trampoline<
         "pushq %r14",
         "pushq %r15",
         // ENCODE_FRAME_POINTER
-        "lea 1(%rsp), %rbp",
+        // "lea 1(%rsp), %rbp",
         "movq %rsp, %rdi",
         "call {rethook_trampoline_callback}",
         // RESTORE_REGS_STRING
@@ -302,7 +306,7 @@ pub(crate) unsafe extern "C" fn arch_rethook_trampoline<
 
         "popfq",
         "ret",
-        kernel_data_segment = const 0x10, // Kernel data segment
+        kernel_data_segment = const KERNEL_DS, // Kernel data segment
         // arch_rethook_trampoline = sym arch_rethook_trampoline::<L,F>,
         rethook_trampoline_callback = sym arch_rethook_trampoline_callback::<L, F>,
         options(att_syntax)
@@ -346,5 +350,6 @@ pub(crate) fn arch_rethook_prepare<L: RawMutex + 'static, F: KprobeAuxiliaryOps 
     // Get the return address from the stack
     kretprobe_instance.ret_addr = *stack;
     kretprobe_instance.frame = sp;
-    *stack = arch_rethook_trampoline::<L, F> as _; // Set the return address to the trampoline
+    // Set the return address to the trampoline
+    *stack = arch_rethook_trampoline::<L, F> as _;
 }

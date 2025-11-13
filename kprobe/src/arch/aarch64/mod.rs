@@ -1,0 +1,326 @@
+use alloc::sync::Arc;
+use core::{
+    alloc::Layout,
+    arch::naked_asm,
+    fmt::Debug,
+    mem::offset_of,
+    ops::{Deref, DerefMut},
+};
+
+use lock_api::RawMutex;
+
+use super::KprobeAuxiliaryOps;
+use crate::{
+    KprobeBasic, KprobeBuilder, KprobeOps,
+    kretprobe::{KretprobeInstance, rethook_trampoline_handler},
+};
+
+/// See <https://elixir.bootlin.com/linux/v6.6/source/arch/arm64/include/uapi/asm/ptrace.h#L58>
+const PSR_V_BIT_POS: usize = 0x10000000;
+const PSR_C_BIT_POS: usize = 0x20000000;
+const PSR_Z_BIT_POS: usize = 0x40000000;
+const PSR_N_BIT_POS: usize = 0x80000000;
+
+const KPROBES_BRK_IMM: u32 = 0x004;
+// const UPROBES_BRK_IMM: u32 = 0x005;
+const KPROBES_BRK_SS_IMM: u32 = 0x006;
+
+/// AARCH64_BREAK_MON	0xd4200000
+/// See <https://elixir.bootlin.com/linux/v6.6/source/arch/arm64/include/asm/insn-def.h#L15>
+const AARCH64_BREAK_MON: u32 = 0xd4200000;
+
+/// kprobes BRK opcodes with ESR encoding
+/// See <https://elixir.bootlin.com/linux/v6.6/source/arch/arm64/include/asm/debug-monitors.h#L43>
+const BRK64_OPCODE_KPROBES: u32 = AARCH64_BREAK_MON | (KPROBES_BRK_IMM << 5);
+/// single step BRK opcode with ESR encoding
+const BRK64_OPCODE_KPROBES_SS: u32 = AARCH64_BREAK_MON | (KPROBES_BRK_SS_IMM << 5);
+
+/// The kprobe structure.
+pub struct Kprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
+    basic: KprobeBasic<L>,
+    point: Arc<AArch64KprobePoint<F>>,
+}
+
+/// The kprobe point structure for aarch64 architecture.
+#[derive(Debug)]
+pub struct AArch64KprobePoint<F: KprobeAuxiliaryOps> {
+    addr: usize,
+    inst_tmp_ptr: usize,
+    _marker: core::marker::PhantomData<F>,
+}
+
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Deref for Kprobe<L, F> {
+    type Target = KprobeBasic<L>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.basic
+    }
+}
+
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> DerefMut for Kprobe<L, F> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.basic
+    }
+}
+
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Kprobe<L, F> {
+    /// Get the probe point of the kprobe.
+    pub fn probe_point(&self) -> &Arc<AArch64KprobePoint<F>> {
+        &self.point
+    }
+}
+
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Debug for Kprobe<L, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Kprobe")
+            .field("basic", &self.basic)
+            .field("point", &self.point)
+            .finish()
+    }
+}
+
+impl<F: KprobeAuxiliaryOps> Drop for AArch64KprobePoint<F> {
+    fn drop(&mut self) {
+        let address = self.addr;
+        let inst_tmp_ptr = self.inst_tmp_ptr;
+        let inst_32 = unsafe { core::ptr::read(inst_tmp_ptr as *const u32) };
+        unsafe {
+            F::set_writeable_for_address(address, 4, true);
+            core::ptr::write(address as *mut u32, inst_32);
+            F::set_writeable_for_address(address, 4, false);
+        }
+        // Deallocate the executable memory
+        let layout = Layout::from_size_align(8, 8).unwrap();
+        F::dealloc_executable_memory(inst_tmp_ptr as *mut u8, layout);
+        log::trace!("Kprobe::uninstall: address: {address:#x}, old_instruction: {inst_32:?}");
+    }
+}
+
+impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
+    /// Install the kprobe by replacing the instruction at the specified address with a breakpoint instruction.
+    pub fn install<L: RawMutex + 'static>(self) -> (Kprobe<L, F>, Arc<AArch64KprobePoint<F>>) {
+        let probe_point = match &self.probe_point {
+            Some(point) => point.clone(),
+            None => self.replace_inst(),
+        };
+        let kprobe = Kprobe {
+            basic: KprobeBasic::from(self),
+            point: probe_point.clone(),
+        };
+        (kprobe, probe_point)
+    }
+
+    /// Replace the instruction at the specified address with a breakpoint instruction.
+    fn replace_inst(&self) -> Arc<AArch64KprobePoint<F>> {
+        let address = self.symbol_addr + self.offset;
+
+        let inst_tmp_ptr =
+            F::alloc_executable_memory(Layout::from_size_align(8, 8).unwrap()) as usize;
+
+        let point = AArch64KprobePoint {
+            addr: address,
+            inst_tmp_ptr,
+            _marker: core::marker::PhantomData,
+        };
+        let inst_32 = unsafe { core::ptr::read(address as *const u32) };
+        unsafe {
+            F::set_writeable_for_address(address, 4, true);
+            core::ptr::write(address as *mut u32, BRK64_OPCODE_KPROBES);
+            F::set_writeable_for_address(address, 4, false);
+            // inst_32 :0-32
+            // break  :32-64
+            core::ptr::write(inst_tmp_ptr as *mut u32, inst_32);
+            core::ptr::write((inst_tmp_ptr + 4) as *mut u32, BRK64_OPCODE_KPROBES_SS);
+        }
+        log::trace!(
+            "Kprobe::install: address: {:#x}, func_name: {:?}, opcode: {:x?}",
+            address,
+            self.symbol,
+            inst_32
+        );
+        Arc::new(point)
+    }
+}
+
+impl<F: KprobeAuxiliaryOps> KprobeOps for AArch64KprobePoint<F> {
+    fn return_address(&self) -> usize {
+        self.addr + 4
+    }
+
+    fn single_step_address(&self) -> usize {
+        self.inst_tmp_ptr
+    }
+
+    fn debug_address(&self) -> usize {
+        self.inst_tmp_ptr + 4
+    }
+
+    fn break_address(&self) -> usize {
+        self.addr
+    }
+}
+
+/// Set up a single step for the given address.
+///
+/// This function updates the program counter (PC) to the specified address.
+pub(crate) fn setup_single_step(pt_regs: &mut PtRegs, single_step_address: usize) {
+    pt_regs.update_pc(single_step_address);
+}
+
+/// Clear the single step for the given address.
+///
+/// This function updates the program counter (PC) to the specified address.
+pub(crate) fn clear_single_step(pt_regs: &mut PtRegs, single_step_address: usize) {
+    pt_regs.update_pc(single_step_address);
+}
+
+/// The register state at the time of the probe.
+///
+/// See <https://elixir.bootlin.com/linux/v6.6/source/arch/arm64/include/asm/ptrace.h#L178>
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[repr(align(8))]
+#[allow(missing_docs)]
+pub struct PtRegs {
+    pub regs: [u64; 31],
+    pub sp: u64,
+    pub pc: u64,
+    pub pstate: u64,
+    pub orig_x0: u64,
+    // for little endian
+    pub syscallno: i32,
+    pub unused2: u32,
+}
+
+const FP_OFFSET: usize = offset_of!(PtRegs, regs) + 29 * core::mem::size_of::<u64>();
+
+impl PtRegs {
+    pub(crate) fn break_address(&self) -> usize {
+        self.pc as usize
+    }
+
+    pub(crate) fn debug_address(&self) -> usize {
+        self.pc as usize
+    }
+
+    pub(crate) fn update_pc(&mut self, pc: usize) {
+        self.pc = pc as u64;
+    }
+
+    /// Get the return value from the r4(a0) registers.
+    pub fn first_ret_value(&self) -> usize {
+        self.regs[0] as usize
+    }
+
+    /// Get the return value from the r5(a1) registers.
+    pub fn second_ret_value(&self) -> usize {
+        self.regs[1] as usize
+    }
+}
+
+/// See <https://elixir.bootlin.com/linux/v6.6/source/arch/arm64/kernel/probes/kprobes_trampoline.S#L10>
+#[unsafe(naked)]
+pub(crate) unsafe extern "C" fn arch_rethook_trampoline<
+    L: RawMutex + 'static,
+    F: KprobeAuxiliaryOps + 'static,
+>() {
+    naked_asm!(
+        "sub sp, sp, {pt_regs_size}",
+        // save all base regs
+        "stp x0, x1, [sp]",
+        "stp x2, x3, [sp, 2*8]",
+        "stp x4, x5, [sp, 4*8]",
+        "stp x6, x7, [sp, 6*8]",
+        "stp x8, x9, [sp, 8*8]",
+        "stp x10, x11, [sp, 10*8]",
+        "stp x12, x13, [sp, 12*8]",
+        "stp x14, x15, [sp, 14*8]",
+        "stp x16, x17, [sp, 16*8]",
+        "stp x18, x19, [sp, 18*8]",
+        "stp x20, x21, [sp, 20*8]",
+        "stp x22, x23, [sp, 22*8]",
+        "stp x24, x25, [sp, 24*8]",
+        "stp x26, x27, [sp, 26*8]",
+        "stp x28, x29, [sp, 28*8]",
+        // calculate PtRegs pointer
+        "add x0, sp, {pt_regs_size}",
+        // save lr(x30) and pt_regs pointer
+        "stp lr, x0, [sp, 30*8]",
+        // Construct a useful saved PSTATE
+        "mrs x0, nzcv",
+        "mrs x1, daif",
+        "orr x0, x0, x1",
+        "mrs x1, CurrentEL",
+        "orr x0, x0, x1",
+        "mrs x1, SPSel",
+        "orr x0, x0, x1",
+        // save pc and pstate
+        "stp xzr, x0, [sp, 32*8]",
+        // Setup a frame pointer.
+        "add x29, sp, {S_FP}",
+        // call the handler
+        "mov x0, sp",
+        "bl {rethook_trampoline_handler}",
+
+        // Replace trampoline address in lr(x30) with actual orig_ret_addr return address
+        "mov lr, x0",
+        // restore all base regs
+        // The frame pointer (x29) is restored with other registers.
+        "ldr x0, [sp, {S_PSTATE}]",
+        "and x0, x0, {M_FLAGS}",
+        "msr nzcv, x0",
+        "ldp x0, x1, [sp]",
+        "ldp x2, x3, [sp, 2*8]",
+        "ldp x4, x5, [sp, 4*8]",
+        "ldp x6, x7, [sp, 6*8]",
+        "ldp x8, x9, [sp, 8*8]",
+        "ldp x10, x11, [sp, 10*8]",
+        "ldp x12, x13, [sp, 12*8]",
+        "ldp x14, x15, [sp, 14*8]",
+        "ldp x16, x17, [sp, 16*8]",
+        "ldp x18, x19, [sp, 18*8]",
+        "ldp x20, x21, [sp, 20*8]",
+        "ldp x22, x23, [sp, 22*8]",
+        "ldp x24, x25, [sp, 24*8]",
+        "ldp x26, x27, [sp, 26*8]",
+        "ldp x28, x29, [sp, 28*8]",
+
+        "add sp, sp, {pt_regs_size}",
+        "ret",
+        S_FP = const FP_OFFSET,
+        S_PSTATE = const offset_of!(PtRegs, pstate),
+        M_FLAGS = const PSR_V_BIT_POS
+                | PSR_C_BIT_POS
+                | PSR_Z_BIT_POS
+                | PSR_N_BIT_POS,
+        pt_regs_size = const core::mem::size_of::<PtRegs>(),
+        rethook_trampoline_handler = sym arch_rethook_trampoline_callback::<L, F>,
+    )
+}
+
+pub(crate) fn arch_rethook_trampoline_callback<
+    L: RawMutex + 'static,
+    F: KprobeAuxiliaryOps + 'static,
+>(
+    pt_regs: &mut PtRegs,
+) -> usize {
+    rethook_trampoline_handler::<L, F>(pt_regs, pt_regs.regs[29] as usize)
+}
+
+pub(crate) fn arch_rethook_fixup_return(_pt_regs: &mut PtRegs, _correct_ret_addr: usize) {
+    // Set the return address to the correct one
+    // pt_regs.ra = correct_ret_addr as usize; // we don't need to set ra,
+}
+
+/// Prepare the kretprobe instance for the rethook.
+pub(crate) fn arch_rethook_prepare<L: RawMutex + 'static, F: KprobeAuxiliaryOps + 'static>(
+    kretprobe_instance: &mut KretprobeInstance,
+    pt_regs: &mut PtRegs,
+) {
+    // Prepare the kretprobe instance for the rethook
+    // lr(x30) is the return address
+    kretprobe_instance.ret_addr = pt_regs.regs[30] as usize;
+    kretprobe_instance.frame = pt_regs.regs[29] as usize;
+    // Set the return address to the trampoline
+    pt_regs.regs[30] = arch_rethook_trampoline::<L, F> as _;
+}

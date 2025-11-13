@@ -7,10 +7,9 @@
 //! - Support for pre-handler and post-handler functions.
 //! - Safe management of probe points and handlers.
 //! - Architecture-specific implementations for handling breakpoints and single-stepping.
-
+//!
 #![no_std]
 #![deny(missing_docs)]
-#![cfg_attr(target_arch = "riscv64", feature(riscv_ext_intrinsics))]
 extern crate alloc;
 
 mod arch;

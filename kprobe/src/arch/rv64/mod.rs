@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 use core::{
     alloc::Layout,
-    arch::riscv64::sfence_vma_all,
     fmt::Debug,
     ops::{Deref, DerefMut},
 };
@@ -89,9 +88,6 @@ impl<F: KprobeAuxiliaryOps> Drop for Rv64KprobePoint<F> {
             self.inst_tmp_ptr as *mut u8,
             Layout::from_size_align(8, 8).unwrap(),
         );
-        unsafe {
-            sfence_vma_all();
-        }
         log::trace!(
             "Kprobe::uninstall: address: {:#x}, old_instruction: {:?}",
             address,
