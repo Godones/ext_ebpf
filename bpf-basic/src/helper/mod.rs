@@ -23,12 +23,12 @@ pub type RawBPFHelperFn = fn(u64, u64, u64, u64, u64) -> u64;
 macro_rules! helper_func {
     ($name:ident::<$($generic:ident),*>) => {
         unsafe {
-            core::mem::transmute::<usize, RawBPFHelperFn>($name::<$($generic),*> as usize)
+            core::mem::transmute::<usize, RawBPFHelperFn>($name::<$($generic),*>  as *const () as usize)
         }
     };
     ($name:ident) => {
         unsafe {
-            core::mem::transmute::<usize, RawBPFHelperFn>($name as usize)
+            core::mem::transmute::<usize, RawBPFHelperFn>($name as *const () as usize)
         }
     };
 }
