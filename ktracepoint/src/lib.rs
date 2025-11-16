@@ -316,8 +316,8 @@ pub fn global_init_events<L: RawMutex + 'static, K: KernelTraceOps + 'static>()
 -> Result<TracingEventsManager<L, K>, &'static str> {
     static TRACE_POINT_ID: AtomicUsize = AtomicUsize::new(0);
     let events_manager = TracingEventsManager::new(TracePointMap::<L, K>::new());
-    let tracepoint_data_start = __start_tracepoint as usize as *mut CommonTracePointMeta<L, K>;
-    let tracepoint_data_end = __stop_tracepoint as usize as *mut CommonTracePointMeta<L, K>;
+    let tracepoint_data_start = __start_tracepoint as *mut CommonTracePointMeta<L, K>;
+    let tracepoint_data_end = __stop_tracepoint as *mut CommonTracePointMeta<L, K>;
     log::info!(
         "tracepoint_data_start: {:#x}, tracepoint_data_end: {:#x}",
         tracepoint_data_start as usize,
