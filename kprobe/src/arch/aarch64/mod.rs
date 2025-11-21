@@ -25,7 +25,6 @@ const KPROBES_BRK_IMM: u32 = 0x004;
 // const UPROBES_BRK_IMM: u32 = 0x005;
 const KPROBES_BRK_SS_IMM: u32 = 0x006;
 
-
 /// See <https://elixir.bootlin.com/linux/v6.6/source/arch/arm64/include/asm/insn-def.h#L15>
 const AARCH64_BREAK_MON: u32 = 0xd4200000;
 
