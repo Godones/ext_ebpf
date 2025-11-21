@@ -1,135 +1,125 @@
 use alloc::{string::ToString, sync::Arc};
 use core::{
-    alloc::Layout,
     fmt::Debug,
     ops::{Deref, DerefMut},
+    sync::atomic::AtomicUsize,
 };
 
 use lock_api::RawMutex;
 use yaxpeax_arch::LengthedInstruction;
 
-use crate::{
-    KprobeAuxiliaryOps, KprobeBasic, KprobeBuilder, KprobeOps,
-    kretprobe::{KretprobeInstance, rethook_trampoline_handler},
-};
+use crate::{KprobeAuxiliaryOps, KprobeOps, ProbeBasic, ProbeBuilder, arch::ExecMemType};
 
 const EBREAK_INST: u8 = 0xcc; // x86_64: 0xcc
 const MAX_INSTRUCTION_SIZE: usize = 15; // x86_64 max instruction length
 
-/// The x86_64 implementation of Kprobe.
-pub struct Kprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
-    basic: KprobeBasic<L>,
-    point: Arc<X86KprobePoint<F>>,
+/// The x86_64 implementation of Probe.
+pub struct Probe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
+    basic: ProbeBasic<L>,
+    point: Arc<X86ProbePoint<F>>,
 }
 
 /// The probe point for x86_64 architecture.
 #[derive(Debug)]
-pub struct X86KprobePoint<F: KprobeAuxiliaryOps> {
+pub struct X86ProbePoint<F: KprobeAuxiliaryOps> {
     addr: usize,
-    old_instruction_ptr: usize,
+    old_instruction_ptr: ExecMemType<F>,
     old_instruction_len: usize,
+    user_mode: bool,
+    // Dynamic user pointer for handling user space instruction pointer adjustments
+    dynamic_user_ptr: AtomicUsize,
     _marker: core::marker::PhantomData<F>,
 }
 
-impl<F: KprobeAuxiliaryOps> Drop for X86KprobePoint<F> {
+impl<F: KprobeAuxiliaryOps> Drop for X86ProbePoint<F> {
     fn drop(&mut self) {
         let address = self.addr;
+        F::set_writeable_for_address(address, self.old_instruction_len, true, self.user_mode);
+        // Restore the original instruction at the probe point
         unsafe {
-            F::set_writeable_for_address(address, self.old_instruction_len, true);
             core::ptr::copy(
-                self.old_instruction_ptr as *const u8,
+                self.old_instruction_ptr.as_ptr(),
                 address as *mut u8,
                 self.old_instruction_len,
             );
-            F::set_writeable_for_address(address, self.old_instruction_len, false);
-            core::arch::x86_64::_mm_mfence();
         }
-        let decoder = yaxpeax_x86::amd64::InstDecoder::default();
-        let buf = unsafe {
-            core::slice::from_raw_parts(
-                self.old_instruction_ptr as *const u8,
-                self.old_instruction_len,
-            )
-        };
-        let inst = decoder.decode_slice(buf).unwrap();
-
-        F::dealloc_executable_memory(
-            self.old_instruction_ptr as *mut u8,
-            Layout::from_size_align(MAX_INSTRUCTION_SIZE + 1, 16).unwrap(),
-        );
+        F::set_writeable_for_address(address, self.old_instruction_len, false, self.user_mode);
         log::trace!(
-            "Kprobe::uninstall: address: {:#x}, old_instruction: {:?}",
-            address,
-            inst.to_string()
+            "X86KprobePoint::drop: Restored instruction at address: {:#x}",
+            address
         );
     }
 }
 
-impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Debug for Kprobe<L, F> {
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Debug for Probe<L, F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Kprobe")
+        f.debug_struct("Probe")
             .field("basic", &self.basic)
             .field("point", &self.point)
             .finish()
     }
 }
 
-impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Deref for Kprobe<L, F> {
-    type Target = KprobeBasic<L>;
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Deref for Probe<L, F> {
+    type Target = ProbeBasic<L>;
 
     fn deref(&self) -> &Self::Target {
         &self.basic
     }
 }
 
-impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> DerefMut for Kprobe<L, F> {
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> DerefMut for Probe<L, F> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.basic
     }
 }
 
-impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
-    pub(crate) fn install<L: RawMutex + 'static>(self) -> (Kprobe<L, F>, Arc<X86KprobePoint<F>>) {
+impl<F: KprobeAuxiliaryOps> ProbeBuilder<F> {
+    pub(crate) fn install<L: RawMutex + 'static>(self) -> (Probe<L, F>, Arc<X86ProbePoint<F>>) {
         let probe_point = match &self.probe_point {
             Some(point) => point.clone(),
             None => self.replace_inst(),
         };
-        let kprobe = Kprobe {
-            basic: KprobeBasic::from(self),
+        let probe = Probe {
+            basic: ProbeBasic::from(self),
             point: probe_point.clone(),
         };
-        (kprobe, probe_point)
+        (probe, probe_point)
     }
 
     /// Replace the instruction at the specified address with a breakpoint instruction.
-    fn replace_inst(&self) -> Arc<X86KprobePoint<F>> {
+    fn replace_inst(&self) -> Arc<X86ProbePoint<F>> {
         let address = self.symbol_addr + self.offset;
-        let inst_tmp = F::alloc_executable_memory(
-            Layout::from_size_align(MAX_INSTRUCTION_SIZE + 1, 16).unwrap(),
-        );
+        let inst_tmp = super::alloc_exec_memory::<F>(self.user_mode);
+
         unsafe {
-            core::ptr::copy(address as *const u8, inst_tmp, MAX_INSTRUCTION_SIZE);
+            core::ptr::copy(
+                address as *const u8,
+                inst_tmp.as_ptr(),
+                MAX_INSTRUCTION_SIZE,
+            );
         }
 
         let decoder = yaxpeax_x86::amd64::InstDecoder::default();
-        let buf = unsafe { core::slice::from_raw_parts(inst_tmp, MAX_INSTRUCTION_SIZE) };
+        let buf = unsafe { core::slice::from_raw_parts(inst_tmp.as_ptr(), MAX_INSTRUCTION_SIZE) };
         let inst = decoder.decode_slice(buf).unwrap();
         let len = inst.len().to_const();
         log::trace!("inst: {:?}, len: {:?}", inst.to_string(), len);
 
-        let point = Arc::new(X86KprobePoint {
+        let point = Arc::new(X86ProbePoint {
             addr: address,
-            old_instruction_ptr: inst_tmp as usize,
+            old_instruction_ptr: inst_tmp,
             old_instruction_len: len as usize,
+            user_mode: self.user_mode,
+            dynamic_user_ptr: AtomicUsize::new(0),
             _marker: core::marker::PhantomData,
         });
 
+        F::set_writeable_for_address(address, len as usize, true, self.user_mode);
         unsafe {
-            F::set_writeable_for_address(address, len as usize, true);
             core::ptr::write_volatile(address as *mut u8, EBREAK_INST);
-            F::set_writeable_for_address(address, len as usize, false);
-            core::arch::x86_64::_mm_mfence();
         }
+        F::set_writeable_for_address(address, len as usize, false, self.user_mode);
 
         log::trace!(
             "Kprobe::install: address: {:#x}, func_name: {:?}",
@@ -140,23 +130,42 @@ impl<F: KprobeAuxiliaryOps> KprobeBuilder<F> {
     }
 }
 
-impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Kprobe<L, F> {
-    /// Get the probe point associated with this kprobe.
-    pub fn probe_point(&self) -> &Arc<X86KprobePoint<F>> {
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Probe<L, F> {
+    /// Get the probe point associated with this probe.
+    pub fn probe_point(&self) -> &Arc<X86ProbePoint<F>> {
         &self.point
     }
 }
 
-impl<F: KprobeAuxiliaryOps> KprobeOps for X86KprobePoint<F> {
+impl<F: KprobeAuxiliaryOps> X86ProbePoint<F> {
+    pub(crate) fn dynamic_user_ptr(&self) -> usize {
+        self.dynamic_user_ptr
+            .load(core::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub(crate) fn set_dynamic_user_ptr(&self, ptr: usize) {
+        self.dynamic_user_ptr
+            .store(ptr, core::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn old_instruction_len(&self) -> usize {
+        self.old_instruction_len
+    }
+}
+
+impl<F: KprobeAuxiliaryOps> KprobeOps for X86ProbePoint<F> {
     fn return_address(&self) -> usize {
         self.addr + self.old_instruction_len
     }
+
     fn single_step_address(&self) -> usize {
-        self.old_instruction_ptr
+        self.old_instruction_ptr.as_ptr() as usize
     }
+
     fn debug_address(&self) -> usize {
-        self.old_instruction_ptr + self.old_instruction_len
+        self.old_instruction_ptr.as_ptr() as usize + self.old_instruction_len
     }
+
     fn break_address(&self) -> usize {
         self.addr
     }
@@ -319,13 +328,14 @@ pub(crate) fn arch_rethook_trampoline_callback<
 >(
     pt_regs: &mut PtRegs,
 ) -> usize {
-    pt_regs.rip = arch_rethook_trampoline::<L, F> as usize; // Set return address to trampoline
+    pt_regs.rip = arch_rethook_trampoline::<L, F> as *const () as usize; // Set return address to trampoline
     pt_regs.orig_rax = usize::MAX;
     pt_regs.rsp += 16; // Adjust rsp to remove the fake return address
 
     let pt_regs_pointer = unsafe { (pt_regs as *mut PtRegs).add(1) as *mut usize };
 
-    let correct_ret_addr = rethook_trampoline_handler::<L, F>(pt_regs, pt_regs_pointer as _);
+    let correct_ret_addr =
+        super::retprobe::rethook_trampoline_handler::<L, F>(pt_regs, pt_regs_pointer as _);
     pt_regs.ss = pt_regs.rflags; // Copy eflags to ss
     correct_ret_addr
 }
@@ -341,7 +351,7 @@ pub(crate) fn arch_rethook_fixup_return(pt_regs: &mut PtRegs, correct_ret_addr: 
 
 /// Prepare the kretprobe instance for the rethook.
 pub(crate) fn arch_rethook_prepare<L: RawMutex + 'static, F: KprobeAuxiliaryOps + 'static>(
-    kretprobe_instance: &mut KretprobeInstance,
+    kretprobe_instance: &mut super::retprobe::RetprobeInstance,
     pt_regs: &mut PtRegs,
 ) {
     let sp = pt_regs.sp();
@@ -351,5 +361,5 @@ pub(crate) fn arch_rethook_prepare<L: RawMutex + 'static, F: KprobeAuxiliaryOps 
     kretprobe_instance.ret_addr = *stack;
     kretprobe_instance.frame = sp;
     // Set the return address to the trampoline
-    *stack = arch_rethook_trampoline::<L, F> as _;
+    *stack = arch_rethook_trampoline::<L, F> as *const () as usize;
 }

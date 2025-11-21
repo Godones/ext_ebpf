@@ -2,31 +2,31 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use lock_api::RawMutex;
 
-use crate::{KprobeAuxiliaryOps, KprobeOps, KprobePoint, Probe};
+use crate::{KprobeAuxiliaryOps, KprobeOps, ProbePoint, UniProbe};
 
 /// A manager for kprobes.
 #[derive(Debug)]
-pub struct KprobeManager<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
-    break_list: BTreeMap<usize, Vec<Probe<L, F>>>,
-    debug_list: BTreeMap<usize, Vec<Probe<L, F>>>,
+pub struct ProbeManager<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
+    break_list: BTreeMap<usize, Vec<UniProbe<L, F>>>,
+    debug_list: BTreeMap<usize, Vec<UniProbe<L, F>>>,
 }
 
-impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Default for KprobeManager<L, F> {
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Default for ProbeManager<L, F> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> KprobeManager<L, F> {
+impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> ProbeManager<L, F> {
     /// Create a new kprobe manager.
     pub const fn new() -> Self {
-        KprobeManager {
+        ProbeManager {
             break_list: BTreeMap::new(),
             debug_list: BTreeMap::new(),
         }
     }
     /// Insert a kprobe into the manager.
-    pub fn insert_probe(&mut self, probe: Probe<L, F>) {
+    pub fn insert_probe(&mut self, probe: UniProbe<L, F>) {
         let probe_point = probe.probe_point().clone();
         self.insert_break_point(probe_point.break_address(), probe.clone());
         self.insert_debug_point(probe_point.debug_address(), probe);
@@ -37,7 +37,7 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> KprobeManager<L, F> {
     /// # Parameters
     /// - `address`: The address of the kprobe, obtained from `KprobePoint::break_address()` or `KprobeBuilder::probe_addr()`.
     /// - `kprobe`: The instance of the kprobe.
-    fn insert_break_point(&mut self, address: usize, probe: Probe<L, F>) {
+    fn insert_break_point(&mut self, address: usize, probe: UniProbe<L, F>) {
         let list = self.break_list.entry(address).or_default();
         list.push(probe);
     }
@@ -48,18 +48,18 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> KprobeManager<L, F> {
     /// - `address`: The address of the kprobe, obtained from `KprobePoint::debug_address()`.
     /// - `kprobe`: The instance of the kprobe.
     ///
-    fn insert_debug_point(&mut self, address: usize, probe: Probe<L, F>) {
+    fn insert_debug_point(&mut self, address: usize, probe: UniProbe<L, F>) {
         let list = self.debug_list.entry(address).or_default();
         list.push(probe);
     }
 
     /// Get the list of kprobes registered at a breakpoint address.
-    pub fn get_break_list(&self, address: usize) -> Option<&Vec<Probe<L, F>>> {
+    pub fn get_break_list(&self, address: usize) -> Option<&Vec<UniProbe<L, F>>> {
         self.break_list.get(&address)
     }
 
     /// Get the list of kprobes registered at a debug address.
-    pub fn get_debug_list(&self, address: usize) -> Option<&Vec<Probe<L, F>>> {
+    pub fn get_debug_list(&self, address: usize) -> Option<&Vec<UniProbe<L, F>>> {
         self.debug_list.get(&address)
     }
 
@@ -84,28 +84,32 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> KprobeManager<L, F> {
     }
 
     /// Remove a kprobe from the manager.
-    pub fn remove_kprobe(&mut self, probe: &Probe<L, F>) {
+    pub fn remove_kprobe(&mut self, probe: &UniProbe<L, F>) {
         let probe_point = probe.probe_point().clone();
         self.remove_one_break(probe_point.break_address(), probe);
         self.remove_one_debug(probe_point.debug_address(), probe);
     }
 
     /// Remove a kprobe from the break_list.
-    fn remove_one_break(&mut self, address: usize, probe: &Probe<L, F>) {
+    fn remove_one_break(&mut self, address: usize, probe: &UniProbe<L, F>) {
         if let Some(list) = self.break_list.get_mut(&address) {
             list.retain(|x| match x {
-                Probe::Kprobe(kprobe) => {
-                    match probe {
-                        Probe::Kprobe(kprobe2) => !Arc::ptr_eq(kprobe, kprobe2),
-                        Probe::Kretprobe(_) => true, // Kretprobe should not match Kprobe
-                    }
-                }
-                Probe::Kretprobe(kretprobe) => {
-                    match probe {
-                        Probe::Kprobe(_) => true, // Kprobe should not match Kretprobe
-                        Probe::Kretprobe(kretprobe2) => !Arc::ptr_eq(kretprobe, kretprobe2),
-                    }
-                }
+                UniProbe::Kprobe(kprobe) => match probe {
+                    UniProbe::Kprobe(kprobe2) => !Arc::ptr_eq(kprobe, kprobe2),
+                    UniProbe::Uprobe(_) | UniProbe::Uretprobe(_) | UniProbe::Kretprobe(_) => true,
+                },
+                UniProbe::Kretprobe(kretprobe) => match probe {
+                    UniProbe::Kprobe(_) | UniProbe::Uprobe(_) | UniProbe::Uretprobe(_) => true,
+                    UniProbe::Kretprobe(kretprobe2) => !Arc::ptr_eq(kretprobe, kretprobe2),
+                },
+                UniProbe::Uprobe(uprobe) => match probe {
+                    UniProbe::Uprobe(uprobe2) => !Arc::ptr_eq(uprobe, uprobe2),
+                    UniProbe::Uretprobe(_) | UniProbe::Kprobe(_) | UniProbe::Kretprobe(_) => true,
+                },
+                UniProbe::Uretprobe(uretprobe) => match probe {
+                    UniProbe::Uprobe(_) | UniProbe::Kprobe(_) | UniProbe::Kretprobe(_) => true,
+                    UniProbe::Uretprobe(uretprobe2) => !Arc::ptr_eq(uretprobe, uretprobe2),
+                },
             });
         }
         if self.break_list_len(address) == 0 {
@@ -114,21 +118,25 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> KprobeManager<L, F> {
     }
 
     /// Remove a kprobe from the debug_list.
-    fn remove_one_debug(&mut self, address: usize, probe: &Probe<L, F>) {
+    fn remove_one_debug(&mut self, address: usize, probe: &UniProbe<L, F>) {
         if let Some(list) = self.debug_list.get_mut(&address) {
             list.retain(|x| match x {
-                Probe::Kprobe(kprobe) => {
-                    match &probe {
-                        Probe::Kprobe(kprobe2) => !Arc::ptr_eq(kprobe, kprobe2),
-                        Probe::Kretprobe(_) => true, // Kretprobe should not match Kprobe
-                    }
-                }
-                Probe::Kretprobe(kretprobe) => {
-                    match &probe {
-                        Probe::Kprobe(_) => true, // Kprobe should not match Kretprobe
-                        Probe::Kretprobe(kretprobe2) => !Arc::ptr_eq(kretprobe, kretprobe2),
-                    }
-                }
+                UniProbe::Kprobe(kprobe) => match &probe {
+                    UniProbe::Kprobe(kprobe2) => !Arc::ptr_eq(kprobe, kprobe2),
+                    UniProbe::Kretprobe(_) | UniProbe::Uprobe(_) | UniProbe::Uretprobe(_) => true,
+                },
+                UniProbe::Kretprobe(kretprobe) => match &probe {
+                    UniProbe::Kprobe(_) | UniProbe::Uprobe(_) | UniProbe::Uretprobe(_) => true,
+                    UniProbe::Kretprobe(kretprobe2) => !Arc::ptr_eq(kretprobe, kretprobe2),
+                },
+                UniProbe::Uprobe(uprobe) => match &probe {
+                    UniProbe::Uprobe(uprobe2) => !Arc::ptr_eq(uprobe, uprobe2),
+                    UniProbe::Uretprobe(_) | UniProbe::Kprobe(_) | UniProbe::Kretprobe(_) => true,
+                },
+                UniProbe::Uretprobe(uretprobe) => match &probe {
+                    UniProbe::Uprobe(_) | UniProbe::Kprobe(_) | UniProbe::Kretprobe(_) => true,
+                    UniProbe::Uretprobe(uretprobe2) => !Arc::ptr_eq(uretprobe, uretprobe2),
+                },
             });
         }
         if self.debug_list_len(address) == 0 {
@@ -138,4 +146,4 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> KprobeManager<L, F> {
 }
 
 /// A list of kprobe points.
-pub type KprobePointList<F> = BTreeMap<usize, Arc<KprobePoint<F>>>;
+pub type ProbePointList<F> = BTreeMap<usize, Arc<ProbePoint<F>>>;
