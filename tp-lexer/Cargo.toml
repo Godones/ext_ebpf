@@ -1,0 +1,12 @@
+[package]
+name = "tp-lexer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license-file.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
