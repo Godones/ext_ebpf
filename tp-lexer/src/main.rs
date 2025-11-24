@@ -13,7 +13,7 @@ fn main() {
     let expr: &str = if args.len() > 1 {
         &args[1]
     } else {
-        "((sig >= 10 && sig < 15) || sig == 17) && comm != bash"
+        "((sig >= 10 && sig < 15) || sig == 17) && comm == sh"
     };
 
     // Declare field types (e.g., for a tracepoint event)

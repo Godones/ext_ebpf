@@ -773,9 +773,14 @@ pub trait ToI64: Send + Sync {
     fn to_i64(&self, bytes: &[u8], offset: usize) -> Result<i64, &'static str>;
 }
 
-fn to_bytes(buf: &[u8], offset: usize, len: usize) -> Result<&[u8], &'static str> {
+fn to_str_bytes(buf: &[u8], offset: usize, len: usize) -> Result<&[u8], &'static str> {
     if offset + len <= buf.len() {
-        Ok(&buf[offset..offset + len])
+        let end = buf[offset..offset + len]
+            .iter()
+            .position(|&b| b == 0) // find the first null byte
+            .map(|p| p + offset)
+            .unwrap_or(offset + len);
+        Ok(&buf[offset..end])
     } else {
         Err("buffer too small for field")
     }
@@ -883,14 +888,14 @@ pub trait Context {
     /// Returns an integer value for the given field, or `None` if missing.
     fn get_integer(&self, name: &str) -> Option<i64>;
     /// Returns a byte slice value for the given field, or `None` if missing.
-    fn get_bytes(&self, name: &str) -> Option<&[u8]>;
+    fn get_str_bytes(&self, name: &str) -> Option<&[u8]>;
 }
 
 impl Context for BTreeMap<String, String> {
     fn get_integer(&self, name: &str) -> Option<i64> {
         self.get(name).and_then(|s| s.parse::<i64>().ok())
     }
-    fn get_bytes(&self, name: &str) -> Option<&[u8]> {
+    fn get_str_bytes(&self, name: &str) -> Option<&[u8]> {
         self.get(name).map(|s| s.as_bytes())
     }
 }
@@ -916,11 +921,12 @@ impl<'a> Context for BufContext<'a> {
             _ => None,
         }
     }
-    fn get_bytes(&self, name: &str) -> Option<&[u8]> {
+
+    fn get_str_bytes(&self, name: &str) -> Option<&[u8]> {
         let (field_type, offset, len) = self.schema.get(name)?;
         match field_type {
             FieldType::Bytes => {
-                let bytes = to_bytes(self.buf, offset, len).ok()?;
+                let bytes = to_str_bytes(self.buf, offset, len).ok()?;
                 Some(bytes)
             }
             _ => None,
@@ -1127,7 +1133,7 @@ fn eval_expr<C: Context>(e: &Expr, schema: &Schema, ctx: &C) -> Tri {
         }
         Expr::StrCmp { field, op, pat } => {
             match schema.get_type(field) {
-                Some(FieldType::Bytes) => match ctx.get_bytes(field) {
+                Some(FieldType::Bytes) => match ctx.get_str_bytes(field) {
                     None => Tri::Unknown,
                     Some(v) => {
                         let res = match op {
