@@ -240,7 +240,7 @@ impl TraceEntryParser {
         entry: &[u8],
     ) -> String {
         let trace_entry = unsafe { &*(entry.as_ptr() as *const TraceEntry) };
-        let id = trace_entry.type_ as u32;
+        let id = trace_entry.common_type as u32;
         let tracepoint = tracepoint_map.get(&id).expect("TracePoint not found");
         let fmt_func = tracepoint.fmt_func();
         let offset = core::mem::size_of::<TraceEntry>();
@@ -250,8 +250,10 @@ impl TraceEntryParser {
         let cpu_id = K::cpu_id();
 
         // Copy the packed field to a local variable to avoid unaligned reference
-        let pid = trace_entry.pid;
-        let pname = cmdline_cache.get(trace_entry.pid as u32).unwrap_or("<...>");
+        let pid = trace_entry.common_pid;
+        let pname = cmdline_cache
+            .get(trace_entry.common_pid as u32)
+            .unwrap_or("<...>");
 
         let secs = time / 1_000_000_000;
         let usec_rem = time % 1_000_000_000 / 1000;

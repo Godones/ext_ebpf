@@ -6,6 +6,7 @@ use core::{
 
 use lock_api::{Mutex, RawMutex};
 use static_keys::RawStaticFalseKey;
+use tp_lexer::{Compiled, Schema};
 
 use crate::{KernelCodeManipulator, KernelTraceOps};
 
@@ -14,13 +15,13 @@ use crate::{KernelCodeManipulator, KernelTraceOps};
 #[repr(C)]
 pub struct TraceEntry {
     /// The type of the trace event, typically the tracepoint ID.
-    pub type_: u16,
+    pub common_type: u16,
     /// Flags associated with the trace event.
-    pub flags: u8,
+    pub common_flags: u8,
     /// The preemption count at the time of the event.
-    pub preempt_count: u8,
+    pub common_preempt_count: u8,
     /// The PID of the process that generated the event.
-    pub pid: i32,
+    pub common_pid: i32,
 }
 
 impl TraceEntry {
@@ -31,12 +32,12 @@ impl TraceEntry {
         let resched = '.';
         let hardsoft_irq = '.';
         let mut preempt_low = '.';
-        if self.preempt_count & 0xf != 0 {
-            preempt_low = ((b'0') + (self.preempt_count & 0xf)) as char;
+        if self.common_preempt_count & 0xf != 0 {
+            preempt_low = ((b'0') + (self.common_preempt_count & 0xf)) as char;
         }
         let mut preempt_high = '.';
-        if self.preempt_count >> 4 != 0 {
-            preempt_high = ((b'0') + (self.preempt_count >> 4)) as char;
+        if self.common_preempt_count >> 4 != 0 {
+            preempt_high = ((b'0') + (self.common_preempt_count >> 4)) as char;
         }
         format!("{irqs_off}{resched}{hardsoft_irq}{preempt_low}{preempt_high}")
     }
@@ -54,6 +55,8 @@ pub struct TracePoint<L: RawMutex + 'static, K: KernelTraceOps + 'static> {
     raw_event_callbacks: Mutex<L, BTreeMap<usize, Box<dyn RawTracePointCallBackFunc>>>,
     trace_entry_fmt_func: fn(&[u8]) -> String,
     trace_print_func: fn() -> String,
+    schema: Schema,
+    compiled_expr: Mutex<L, Option<Compiled>>,
     flags: u8,
 }
 
@@ -107,6 +110,7 @@ impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePoint<L, K> {
         system: &'static str,
         fmt_func: fn(&[u8]) -> String,
         trace_print_func: fn() -> String,
+        schema: Schema,
     ) -> Self {
         Self {
             name,
@@ -120,7 +124,14 @@ impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePoint<L, K> {
             default_callbacks: Mutex::new(BTreeMap::new()),
             event_callbacks: Mutex::new(BTreeMap::new()),
             raw_event_callbacks: Mutex::new(BTreeMap::new()),
+            schema,
+            compiled_expr: Mutex::new(None),
         }
+    }
+
+    /// Returns the schema of the tracepoint.
+    pub fn schema(&self) -> &Schema {
+        &self.schema
     }
 
     /// Returns the name of the tracepoint.
@@ -146,6 +157,18 @@ impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePoint<L, K> {
     /// Returns the flags of the tracepoint.
     pub fn flags(&self) -> u8 {
         self.flags
+    }
+
+    /// Sets the compiled expression for the tracepoint.
+    pub fn set_compiled_expr(&self, compiled: Option<Compiled>) {
+        let mut guard = self.compiled_expr.lock();
+        *guard = compiled;
+    }
+
+    /// Returns the compiled expression for the tracepoint.
+    pub fn get_compiled_expr(&self) -> Option<Compiled> {
+        let guard = self.compiled_expr.lock();
+        guard.clone()
     }
 
     /// Returns the format function for the tracepoint.

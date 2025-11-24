@@ -4,6 +4,7 @@
 
 /// A trait to convert various types to u64 representation.
 pub trait AsU64 {
+    #[allow(clippy::wrong_self_convention)]
     /// Convert the value to u64.
     fn as_u64(self) -> u64;
 }

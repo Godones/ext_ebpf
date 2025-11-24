@@ -120,12 +120,12 @@ mod tracepoint_test {
         TP_PROTO(a: u32, b: &TestS),
         TP_STRUCT__entry{
             a: u32,
-            pad:[u8;5],
+            pad:[u8;4],
             b: u32
         },
         TP_fast_assign{
             a: a,
-            pad: [0; 5],
+            pad: [0; 4],
             b: *b.b.deref().deref()
         },
         TP_ident(__entry),
@@ -235,22 +235,40 @@ fn main() {
         let events = subsystem.event_names();
         for event in events {
             let trace_point_info = subsystem.get_event(&event).unwrap();
+            // enable the tracepoint
             trace_point_info.enable_file().write('1');
+
+            // Register fake callbacks
             trace_point_info
                 .tracepoint()
                 .register_event_callback(1, Box::new(FakeEventCallback));
-            trace_point_info.tracepoint().enable_event();
 
+            // Register raw fake callbacks
             trace_point_info
                 .tracepoint()
                 .register_raw_event_callback(1, Box::new(FakeEventCallback));
+
+            // Enable the event
+            trace_point_info.tracepoint().enable_event();
+
+            trace_point_info
+                .filter_file()
+                .write("(a > 8 && a<=10) || b >5")
+                .unwrap();
+
+            let schema = trace_point_info.tracepoint().schema();
+            println!("Schema for {}.{}: {:#?}", sbs, event, schema);
             println!("Enabled tracepoint: {}.{}", sbs, event);
         }
     }
 
     println!("---After enabling tracepoints---");
     tracepoint_test::test_trace(1, 2);
+    tracepoint_test::test_trace(9, 2); // should match
     tracepoint_test::test_trace(3, 4);
+    tracepoint_test::test_trace(10, 4); // should match
+    tracepoint_test::test_trace(11, 6); // should match
+
     print_trace_records(
         &tracepoint_map,
         &tracepoint_test::TRACE_CMDLINE_CACHE.lock(),

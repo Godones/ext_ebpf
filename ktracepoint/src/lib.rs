@@ -37,13 +37,14 @@ pub use point::{
 };
 pub use ptr::AsU64;
 use static_keys::code_manipulate::CodeManipulator;
+use tp_lexer::compile_with_schema;
 pub use trace_pipe::{
     TraceCmdLineCache, TraceCmdLineCacheSnapshot, TraceEntryParser, TracePipeOps, TracePipeRaw,
     TracePipeSnapshot,
 };
 
 /// KernelTraceOps trait provides kernel-level operations for tracing.
-pub trait KernelTraceOps {
+pub trait KernelTraceOps: Send + Sync {
     /// Get the current time in nanoseconds.
     fn time_now() -> u64;
     /// Get the current CPU ID.
@@ -192,7 +193,7 @@ pub struct EventInfo<L: RawMutex + 'static, K: KernelTraceOps + 'static> {
     tracepoint: &'static TracePoint<L, K>,
     format: TracePointFormatFile<L, K>,
     id: TracePointIdFile<L, K>,
-    // filter:,
+    filter: TraceFilterFile<L, K>,
     // trigger:,
 }
 
@@ -201,11 +202,13 @@ impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> EventInfo<L, K> {
         let enable = TracePointEnableFile::new(tracepoint);
         let format = TracePointFormatFile::new(tracepoint);
         let id = TracePointIdFile::new(tracepoint);
+        let filter = TraceFilterFile::new(tracepoint);
         Self {
             enable,
             tracepoint,
             format,
             id,
+            filter,
         }
     }
 
@@ -227,6 +230,11 @@ impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> EventInfo<L, K> {
     /// Get the ID file
     pub fn id_file(&self) -> &TracePointIdFile<L, K> {
         &self.id
+    }
+
+    /// Get the filter file
+    pub fn filter_file(&self) -> &TraceFilterFile<L, K> {
+        &self.filter
     }
 }
 
@@ -301,6 +309,75 @@ impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TracePointIdFile<L, K> 
     }
 }
 
+/// TraceFilterFile provides a way to set filters on the tracepoint.
+#[derive(Debug)]
+pub struct TraceFilterFile<L: RawMutex + 'static, K: KernelTraceOps + 'static> {
+    tracepoint: &'static TracePoint<L, K>,
+    inner: Mutex<L, TraceFilterFileInner>,
+}
+
+#[derive(Debug, Clone)]
+struct TraceFilterFileInner {
+    filter_expr: Option<String>,
+    pre_error: Option<String>,
+}
+
+impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TraceFilterFile<L, K> {
+    fn new(tracepoint: &'static TracePoint<L, K>) -> Self {
+        Self {
+            tracepoint,
+            inner: Mutex::new(TraceFilterFileInner {
+                filter_expr: None,
+                pre_error: None,
+            }),
+        }
+    }
+
+    /// Read the tracepoint filter.
+    ///
+    /// Returns the current filter expression or an error message if there was a pre-error.
+    pub fn read(&self) -> String {
+        if let Some(err) = self.inner.lock().pre_error.as_ref() {
+            return err.clone();
+        }
+        if let Some(filter) = self.inner.lock().filter_expr.as_ref() {
+            filter.clone()
+        } else {
+            "none".to_string()
+        }
+    }
+
+    /// Write a new filter expression to the tracepoint.
+    pub fn write(&self, filter: &str) -> Result<(), &'static str> {
+        if filter == "0" {
+            // clear the filter and pre-error
+            let mut inner = self.inner.lock();
+            inner.filter_expr = None;
+            inner.pre_error = None;
+            Ok(())
+        } else {
+            let schema = self.tracepoint.schema();
+            let res = compile_with_schema(filter, *schema);
+            match res {
+                Ok(compiled_expr) => {
+                    let mut inner = self.inner.lock();
+                    inner.filter_expr = Some(filter.to_string());
+                    inner.pre_error = None;
+                    self.tracepoint.set_compiled_expr(Some(compiled_expr));
+                    Ok(())
+                }
+                Err(e) => {
+                    let mut inner = self.inner.lock();
+                    inner.pre_error = Some(e.message);
+                    inner.filter_expr = None;
+                    self.tracepoint.set_compiled_expr(None);
+                    Err("compile error")
+                }
+            }
+        }
+    }
+}
+
 unsafe extern "C" {
     fn __start_tracepoint();
     fn __stop_tracepoint();
@@ -312,7 +389,7 @@ unsafe extern "C" {
 /// The K type parameter is the kernel trace operations type used for performing kernel-level operations.
 ///
 /// Returns a Result containing the initialized TracingEventsManager or an error message.
-pub fn global_init_events<L: RawMutex + 'static, K: KernelTraceOps + 'static>()
+pub fn global_init_events<L: RawMutex + 'static + Send + Sync, K: KernelTraceOps + 'static>()
 -> Result<TracingEventsManager<L, K>, &'static str> {
     static TRACE_POINT_ID: AtomicUsize = AtomicUsize::new(0);
     let events_manager = TracingEventsManager::new(TracePointMap::<L, K>::new());
@@ -340,7 +417,7 @@ pub fn global_init_events<L: RawMutex + 'static, K: KernelTraceOps + 'static>()
         let tracepoint = tracepoint_meta.trace_point;
         let id = TRACE_POINT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         tracepoint.set_id(id as u32);
-        tracepoint.register(tracepoint_meta.print_func, Box::new(()));
+        tracepoint.register(tracepoint_meta.print_func, Box::new(tracepoint));
         tracepoint_map.insert(id as u32, tracepoint);
         log::info!(
             "tracepoint registered: {}:{}",

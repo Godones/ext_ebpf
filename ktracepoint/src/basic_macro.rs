@@ -8,6 +8,7 @@
 /// - `TP_system`: The subsystem or system to which the tracepoint belongs.
 /// - `TP_PROTO`: The prototype of the tracepoint function.
 /// - `TP_STRUCT__entry`: The structure of the tracepoint entry.
+///   **WARN**: User need to make sure the layout of the struct is compatible with C layout.
 /// - `TP_fast_assign`: The assignment logic for the tracepoint entry.
 /// - `TP_ident`: The identifier for the tracepoint entry.
 /// - `TP_printk`: The print format for the tracepoint.
@@ -57,7 +58,28 @@ macro_rules! define_event_trace{
             static_keys::define_static_key_false_generic!([<__ $name _KEY>], $crate::KernelCodeManipulator<$kops>);
             #[allow(non_upper_case_globals)]
             #[used]
-            static [<__ $name>]: $crate::TracePoint<$lock, $kops> = $crate::TracePoint::new(&[<__ $name _KEY>],stringify!($name), stringify!($system),[<trace_fmt_ $name>], [<trace_fmt_show $name>]);
+            static [<__ $name>]: $crate::TracePoint<$lock, $kops> = {
+                #[repr(C)]
+                struct Entry {
+                    $($entry: $entry_type,)*
+                }
+                #[repr(C)]
+                struct FullEntry {
+                    common: $crate::TraceEntry,
+                    entry: Entry,
+                }
+                use tp_lexer::{schema,FieldClassifier};
+                let schema = schema!(
+                    "common_type" => (u16::FIELD_TYPE, 0, 2),
+                    "common_flags" => (u8::FIELD_TYPE, 2, 1),
+                    "common_preempt_count" => (u8::FIELD_TYPE, 3, 1),
+                    "common_pid" => (i32::FIELD_TYPE, 4, 4),
+                    $(
+                        stringify!($entry) => (<$entry_type>::FIELD_TYPE, core::mem::offset_of!(FullEntry, entry.$entry), core::mem::size_of::<$entry_type>()),
+                    )*
+                );
+                $crate::TracePoint::new(&[<__ $name _KEY>], stringify!($name), stringify!($system),[<trace_fmt_ $name>], [<trace_fmt_show $name>], schema)
+            };
 
             #[inline(always)]
             #[allow(non_snake_case)]
@@ -65,7 +87,7 @@ macro_rules! define_event_trace{
                 if static_keys::static_branch_unlikely!([<__ $name _KEY>]){
                     let mut f = |trace_func: &$crate::TracePointFunc |{
                         let func = trace_func.func;
-                        let data = trace_func.data.as_ref();
+                        let data = trace_func.data.deref();
                         let func = unsafe{core::mem::transmute::<fn(),fn(& (dyn core::any::Any+Send+Sync), $($arg_type),*)>(func)};
                         func(data $(,$arg)*);
                     };
@@ -91,10 +113,10 @@ macro_rules! define_event_trace{
 
                     let pid = $kops::current_pid();
                     let common = $crate::TraceEntry {
-                        type_: [<__ $name>].id() as _,
-                        flags: [<__ $name>].flags(),
-                        preempt_count: 0,
-                        pid: pid as i32,
+                        common_type: [<__ $name>].id() as _,
+                        common_flags: [<__ $name>].flags(),
+                        common_preempt_count: 0,
+                        common_pid: pid as i32,
                     };
 
                     let full_entry = FullEntry {
@@ -153,7 +175,7 @@ macro_rules! define_event_trace{
             };
 
             #[allow(non_snake_case)]
-            fn [<trace_default_ $name>]<F:$crate::KernelTraceOps>(_data:&mut (dyn core::any::Any+Send+Sync), $($arg:$arg_type),* ){
+            fn [<trace_default_ $name>]<F:$crate::KernelTraceOps + 'static>(data:&mut (dyn core::any::Any+Send+Sync), $($arg:$arg_type),* ){
                 #[repr(C)]
                 struct Entry {
                     $($entry: $entry_type,)*
@@ -170,10 +192,10 @@ macro_rules! define_event_trace{
 
                 let pid = F::current_pid();
                 let common = $crate::TraceEntry {
-                    type_: [<__ $name>].id() as _,
-                    flags: [<__ $name>].flags(),
-                    preempt_count: 0,
-                    pid: pid as i32,
+                    common_type: [<__ $name>].id() as _,
+                    common_flags: [<__ $name>].flags(),
+                    common_preempt_count: 0,
+                    common_pid: pid as i32,
                 };
 
                 let full_entry = FullEntry {
@@ -187,6 +209,17 @@ macro_rules! define_event_trace{
                         core::mem::size_of::<FullEntry>(),
                     )
                 };
+
+                // evaluate the filter expression
+                let tp = data.downcast_mut::<&'static $crate::TracePoint<$lock, F>>().expect("Invalid tracepoint data");
+                let tp_compiled_expr = tp.get_compiled_expr();
+                if let Some(compiled_expr) = tp_compiled_expr {
+                    use tp_lexer::BufContext;
+                    let buf_ctx = BufContext::new(event_buf, &tp.schema());
+                    if !compiled_expr.evaluate(&buf_ctx) {
+                        return;
+                    }
+                }
 
                 F::trace_cmdline_push(pid);
                 F::trace_pipe_push_raw_record(event_buf);
