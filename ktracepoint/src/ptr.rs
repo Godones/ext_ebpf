@@ -42,8 +42,21 @@ impl<T> AsU64 for *const T {
         self as u64
     }
 }
+
 impl<T> AsU64 for *mut T {
     fn as_u64(self) -> u64 {
         self as u64
+    }
+}
+
+impl AsU64 for &str {
+    fn as_u64(self) -> u64 {
+        self.as_ptr() as u64
+    }
+}
+
+impl AsU64 for &[u8] {
+    fn as_u64(self) -> u64 {
+        self.as_ptr() as u64
     }
 }

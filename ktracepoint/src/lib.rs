@@ -37,6 +37,7 @@ pub use point::{
 };
 pub use ptr::AsU64;
 use static_keys::code_manipulate::CodeManipulator;
+pub use tp_lexer;
 use tp_lexer::compile_with_schema;
 pub use trace_pipe::{
     TraceCmdLineCache, TraceCmdLineCacheSnapshot, TraceEntryParser, TracePipeOps, TracePipeRaw,
@@ -343,17 +344,18 @@ impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TraceFilterFile<L, K> {
         if let Some(filter) = self.inner.lock().filter_expr.as_ref() {
             filter.clone()
         } else {
-            "none".to_string()
+            "none\n".to_string()
         }
     }
 
     /// Write a new filter expression to the tracepoint.
     pub fn write(&self, filter: &str) -> Result<(), &'static str> {
-        if filter == "0" {
+        if filter.as_bytes()[0] == b'0' {
             // clear the filter and pre-error
             let mut inner = self.inner.lock();
             inner.filter_expr = None;
             inner.pre_error = None;
+            self.tracepoint.set_compiled_expr(None);
             Ok(())
         } else {
             let schema = self.tracepoint.schema();
@@ -366,8 +368,9 @@ impl<L: RawMutex + 'static, K: KernelTraceOps + 'static> TraceFilterFile<L, K> {
                     self.tracepoint.set_compiled_expr(Some(compiled_expr));
                     Ok(())
                 }
-                Err(e) => {
+                Err(mut e) => {
                     let mut inner = self.inner.lock();
+                    e.message.push('\n');
                     inner.pre_error = Some(e.message);
                     inner.filter_expr = None;
                     self.tracepoint.set_compiled_expr(None);

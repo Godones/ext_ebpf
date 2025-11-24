@@ -68,7 +68,7 @@ macro_rules! define_event_trace{
                     common: $crate::TraceEntry,
                     entry: Entry,
                 }
-                use tp_lexer::{schema,FieldClassifier};
+                use $crate::tp_lexer::{schema,FieldClassifier};
                 let schema = schema!(
                     "common_type" => (u16::FIELD_TYPE, 0, 2),
                     "common_flags" => (u8::FIELD_TYPE, 2, 1),
@@ -110,6 +110,7 @@ macro_rules! define_event_trace{
                     let entry = Entry {
                         $($assign: $value,)*
                     };
+
                     use $crate::KernelTraceOps;
                     let pid = $kops::current_pid();
                     let common = $crate::TraceEntry {
@@ -214,7 +215,7 @@ macro_rules! define_event_trace{
                 let tp = data.downcast_mut::<&'static $crate::TracePoint<$lock, F>>().expect("Invalid tracepoint data");
                 let tp_compiled_expr = tp.get_compiled_expr();
                 if let Some(compiled_expr) = tp_compiled_expr {
-                    use tp_lexer::BufContext;
+                    use $crate::tp_lexer::BufContext;
                     let buf_ctx = BufContext::new(event_buf, &tp.schema());
                     if !compiled_expr.evaluate(&buf_ctx) {
                         return;
