@@ -87,7 +87,7 @@ macro_rules! define_event_trace{
                 if static_keys::static_branch_unlikely!([<__ $name _KEY>]){
                     let mut f = |trace_func: &$crate::TracePointFunc |{
                         let func = trace_func.func;
-                        let data = trace_func.data.deref();
+                        let data = trace_func.data.as_ref();
                         let func = unsafe{core::mem::transmute::<fn(),fn(& (dyn core::any::Any+Send+Sync), $($arg_type),*)>(func)};
                         func(data $(,$arg)*);
                     };
@@ -110,7 +110,7 @@ macro_rules! define_event_trace{
                     let entry = Entry {
                         $($assign: $value,)*
                     };
-
+                    use $crate::KernelTraceOps;
                     let pid = $kops::current_pid();
                     let common = $crate::TraceEntry {
                         common_type: [<__ $name>].id() as _,
