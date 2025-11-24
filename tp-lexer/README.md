@@ -1,82 +1,127 @@
-# tp-lexer: filter expression parsing and evaluation
+# tp-lexer: no_std filter expression engine for tracepoint-like events
 
-A lightweight library for parsing and evaluating Linux tracepoint-like filter expressions. It supports numeric and string comparisons, glob matching, bit masking, and tri-state semantics, making it useful for filtering event records in eBPF/trace pipelines.
+`tp-lexer` parses and evaluates boolean filter expressions combining numeric and byte/string comparisons for event pipelines (eBPF / tracepoints / custom telemetry). It targets `no_std` (with `alloc`) and supports direct evaluation over raw byte buffers or map-based contexts.
 
-- Numeric operators: `== != < <= > >=`, with optional bit mask: `field & 0x10 == 0x10`
-- String operators: `== != ~` (`~` performs glob matching: `* ? [..]`, supports `[!a]`/`[^a]`)
-- Strings may be unquoted (e.g. `comm != bash`). Use quotes when spaces/special chars exist (e.g. `"C Program").
-- Logical operators: `&& ||` with short-circuit. Precedence: parentheses > compare > `&&` > `||`.
-- Missing fields at runtime yield `Unknown`; `Unknown` is true-neutral in `&&`, false-neutral in `||`, and top-level `Unknown` is treated as `true`.
-- Unknown fields (not in schema) are compile-time errors.
-- Numeric literals support decimal and hexadecimal (`0x..`).
+## Features
+- Numeric operators: `== != < <= > >=` (bit mask form: `field & 0x10 == 0x10`).
+- Byte/string operators: `== != ~` (glob: `* ? [..]` with class negation `[!a]` / `[^a]`).
+- Unquoted barewords allowed: `comm != bash`; quote when spaces or special chars present (`"C Program"`).
+- Precedence: parentheses > comparison > `&&` > `||` (short-circuit evaluation).
+- Tri-state runtime: missing field => `Unknown`.
+  - `Unknown && True` => `True` (true-neutral)
+  - `Unknown || False` => `False` (false-neutral)
+  - Top-level `Unknown` => treated as `True` (fail-open to avoid silent data loss).
+- Hex (`0x..`) and decimal integer literals.
+- Compile-time validation: unknown field or type mismatch produces a `ParseError`.
+- Raw buffer evaluation (`BufContext`) using schema offsets; no copying.
 
-## Quick Start
+## Schema Definition
+Define schemas with the `schema!` macro. Each entry: `"name" => (FieldType, offset, length)`.
+
+Integer types implement the `FieldClassifier` trait exposing `FIELD_TYPE`. Bytes fields use `FieldType::Bytes`.
 
 ```rust
-use std::collections::HashMap;
-use tp_lexer::{Schema, compile_with_schema};
+use tp_lexer::{schema, FieldType, compile_with_schema};
 
-fn main() {
-    // 1) Declare field types (e.g., for a tracepoint event)
-    let schema = Schema::new()
-        .with_int("sig")
-        .with_str("comm")
-        .with_int("flags");
-
-    // 2) Compile the expression (unknown fields or type mismatches error out)
-    let expr = "((sig >= 10 && sig < 15) || sig == 17) && comm != bash";
-    let compiled = compile_with_schema(expr, schema).expect("compile filter");
-
-    // 3) Runtime context (this crate implements Context for HashMap<String,String>)
-    let mut ctx: HashMap<String, String> = HashMap::new();
-    ctx.insert("sig".into(), "12".into());
-    ctx.insert("comm".into(), "sh".into());
-
-    // 4) Evaluate
-    let ok = compiled.evaluate(&ctx);
-    println!("match? {}", ok); // true
-}
+let schema = schema!(
+    "sig"  => (u32::FIELD_TYPE, 0, 4),      // u32 at bytes 0..4
+    "comm" => (FieldType::Bytes, 4, 12),    // 12 bytes at 4..16
+);
+let expr = "sig >= 10 && comm != bash";
+let compiled = compile_with_schema(expr, schema).unwrap();
 ```
 
-Glob example:
+## Map-Based Context Example
+
 ```rust
-let schema = Schema::new().with_str("comm");
-let compiled = compile_with_schema("comm ~ bash*", schema).unwrap();
-let mut ctx = HashMap::from([(String::from("comm"), String::from("bashXYZ"))]);
+use alloc::collections::BTreeMap;
+use tp_lexer::{schema, FieldType, compile_with_schema};
+
+let schema = schema!(
+    "sig"  => (u32::FIELD_TYPE, 0, 4),
+    "comm" => (FieldType::Bytes, 4, 16),
+);
+let compiled = compile_with_schema("sig >= 10 && comm != bash", schema).unwrap();
+let mut ctx = BTreeMap::from([
+    ("sig".to_string(), "12".to_string()),
+    ("comm".to_string(), "sh".to_string()),
+]);
 assert!(compiled.evaluate(&ctx));
 ```
 
-Bit mask example:
+## Raw Buffer Context Example
+
 ```rust
-let schema = Schema::new().with_int("flags");
-let cmp = compile_with_schema("flags & 0x10 == 0x10", schema).unwrap();
-let ctx = HashMap::from([(String::from("flags"), format!("{}", 0x30))]);
-assert!(cmp.evaluate(&ctx));
+use tp_lexer::{schema, FieldType, compile_with_schema, BufContext};
+
+let schema = schema!(
+    "pid"  => (u32::FIELD_TYPE, 0, 4),
+    "comm" => (FieldType::Bytes, 4, 16),
+);
+let mut buf = [0u8; 32];
+buf[0..4].copy_from_slice(&1234u32.to_le_bytes());
+buf[4..8].copy_from_slice(b"bash");
+let ctx = BufContext::new(&buf, &schema);
+let compiled = compile_with_schema("pid == 1234 && comm == bash", schema).unwrap();
+assert!(compiled.evaluate(&ctx));
 ```
 
-## Run & Test
+## Glob Matching
 
-From the workspace root:
+```rust
+let schema = schema!("comm" => (FieldType::Bytes, 0, 16));
+let compiled = compile_with_schema("comm ~ bash*", schema).unwrap();
+let mut buf = [0u8; 32];
+buf[0..4].copy_from_slice(&0u32.to_le_bytes()); // unused
+buf[4..8].copy_from_slice(b"bash");
+let ctx = BufContext::new(&buf, &schema);
+assert!(compiled.evaluate(&ctx));
+```
+
+## Bit Mask Example
+
+```rust
+let schema = schema!("flags" => (u32::FIELD_TYPE, 0, 4));
+let compiled = compile_with_schema("flags & 0x10 == 0x10", schema).unwrap();
+let mut buf = [0u8; 8];
+buf[0..4].copy_from_slice(&0x30u32.to_le_bytes()); // 0x30 & 0x10 == 0x10 -> true
+let ctx = BufContext::new(&buf, &schema);
+assert!(compiled.evaluate(&ctx));
+```
+
+## Errors & Semantics
+Compile-time errors:
+- Unknown field names
+- Type mismatches (numeric op on bytes field; string op on integer field)
+- Syntax errors (unrecognized tokens, unterminated string, lone operator characters)
+
+Runtime semantics:
+- Missing values => `Unknown` tri-state propagation
+- Top-level `Unknown` => treated as `true` (fail-open)
+- Short-circuit evaluation limits unnecessary field access
+
+## Performance Notes
+- Bit masking done after integer fetch; consider pre-masked fields if hot.
+- Glob matcher is a simple recursive backtracking implementation; patterns dominated by leading `*` may degrade performance—structure patterns to avoid pathological worst cases.
+- For high-throughput paths, prefer `BufContext` to avoid string allocations.
+
+## Non-Goals / Current Omissions
+- No regex (glob only)
+- No arithmetic besides bit masking
+- No user-defined functions
+- No range syntax (`[a,b]`) or set membership; can be emulated with chained comparisons / ORs
+
+## Testing
+Operator coverage tests ensure every numeric and string comparison path, mask usage, and type mismatch branch is exercised (`cargo test -p tp-lexer`).
+
+## Build & Run
 ```zsh
 cargo test -p tp-lexer
 cargo run  -p tp-lexer -- 'comm ~ bash* && (sig == 17 || sig >= 10)'
 ```
 
-- Without arguments the demo binary runs a default expression.
-- Adjust `Schema` and the event context construction to integrate this library into your trace pipeline.
-
-## Errors & Semantics
-- Compile-time errors:
-  - Unknown fields (not defined in `Schema`)
-  - Type mismatches (numeric compare on string fields, or vice versa)
-  - Syntax errors (unknown operators, unterminated strings, etc.)
-- Runtime semantics:
-  - Missing fields return `Unknown`; with short-circuit and neutral behavior in `&&`/`||`; top-level `Unknown` is treated as `true` to avoid filtering out events solely due to missing fields.
-
-## Integration Tips
-- Precompile: parse filters from files into an AST once, and reuse compiled expressions for each event.
-- Performance: intern field names, precompute masks and comparisons, and minimize string allocations.
-- Extensions (optional): sets, ranges, helper functions/regex (intentionally not enabled to stay close to kernel docs).
+## Tri-State Rationale
+Fail-open semantics (Unknown => true) prevent accidental data loss when filters reference newly introduced fields not yet populated. If strict filtering is required, introduce an explicit presence indicator field and include it in the expression.
 
 ## Reference
 - [Linux tracepoint filter docs](https://www.kernel.org/doc/html/v4.17/trace/events.html)

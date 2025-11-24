@@ -1,21 +1,28 @@
-//! A tiny filter expression parser and evaluator for Linux tracepoint-like filters.
+//! A tiny no_std filter expression parser and evaluator for Linux tracepoint–like filters.
 //!
-//! This crate parses boolean expressions combining numeric and string comparisons
-//! with logical operators. Supported features:
-//! - Numeric ops: `== != < <= > >=` with optional bit mask: `field & 0x10 == 0x10`.
-//! - String ops: `== != ~` where `~` is glob matching (`* ? [..]`, with `[!a]`/`[^a]`).
-//! - Strings may be unquoted (e.g. `comm != bash`); quote when spaces/special chars present.
-//! - Logical ops: `&& ||` with short-circuit; precedence: parentheses > compare > `&&` > `||`.
-//! - Missing fields at runtime yield tri-state `Unknown`; top-level `Unknown` evaluates to `true`.
-//! - Unknown acts as true-neutral for `&&` and false-neutral for `||`.
-//! - Unknown fields in schema are compile-time errors.
+//! Features:
+//! - Numeric comparisons: `== != < <= > >=` (supports bit mask form: `field & 0x10 == 0x10`).
+//! - String/byte comparisons: `== != ~` (`~` performs glob matching supporting `* ? [..]` and class negation `[!a]` / `[^a]`).
+//! - Unquoted barewords allowed (`comm != bash`); quote when spaces or special characters are present (`"C Program"`).
+//! - Logical operators with precedence: parentheses > comparison > `&&` > `||` (short‑circuit evaluation).
+//! - Tri‑state runtime: missing field => `Unknown`; top‑level `Unknown` is treated as `true` (fail‑open), `Unknown` is true‑neutral for `&&` and false‑neutral for `||`.
+//! - Compile‑time validation of field existence and type.
+//! - Hex (`0x..`) and decimal integer literals.
+//! - no_std + alloc friendly (uses `BTreeMap` in examples; can evaluate directly over a raw byte buffer via `BufContext`).
 //!
-//! Quick start:
+//! Schema & Field Types:
+//! A schema is defined via the `schema!` macro listing `(name, FieldType, offset, length)` tuples. Integer types implement `FieldClassifier` exposing a `FIELD_TYPE` constant. Bytes fields use `FieldType::Bytes`.
+//!
+//! Example (map based):
 //! ```rust
-//! use std::collections::BTreeMap;
-//! use tp_lexer::{Schema, compile_with_schema};
+//! extern crate alloc;
+//! use alloc::collections::BTreeMap;
+//! use tp_lexer::{schema, FieldType, compile_with_schema, FieldClassifier};
 //!
-//! let schema = Schema::new().with_int("sig").with_str("comm");
+//! let schema = schema!(
+//!     "sig"  => (u32::FIELD_TYPE, 0, 4),
+//!     "comm" => (FieldType::Bytes, 4, 16),
+//! );
 //! let compiled = compile_with_schema("sig >= 10 && comm != bash", schema).unwrap();
 //! let mut ctx = BTreeMap::from([
 //!     ("sig".to_string(), "12".to_string()),
@@ -23,6 +30,38 @@
 //! ]);
 //! assert!(compiled.evaluate(&ctx));
 //! ```
+//!
+//! Example (raw buffer):
+//! ```rust
+//! use tp_lexer::{schema, FieldType, compile_with_schema, BufContext, FieldClassifier};
+//! // Layout: [ sig: u32 (4 bytes) | comm: 12 bytes ASCII | padding ]
+//! let schema = schema!(
+//!     "sig"  => (u32::FIELD_TYPE, 0, 4),
+//!     "comm" => (FieldType::Bytes, 4, 12),
+//! );
+//! let mut buf = [0u8; 32];
+//! // sig = 12
+//! buf[0..4].copy_from_slice(&12u32.to_le_bytes());
+//! // comm = "sh" zero padded
+//! buf[4..6].copy_from_slice(b"sh");
+//! let ctx = BufContext::new(&buf, &schema);
+//! let compiled = compile_with_schema("sig >= 10 && comm != bash", schema).unwrap();
+//! assert!(compiled.evaluate(&ctx));
+//! ```
+//!
+//! Tri‑state rationale: treating top‑level `Unknown` as `true` prevents inadvertent data loss when a new field is not yet populated. If strict behavior is desired you can wrap your filter: `(field != value) && defined(field)` by introducing an explicit presence flag in your schema.
+//!
+//! Limitations / Non‑Goals:
+//! - No arithmetic besides bit masking.
+//! - No unary operators or regex; glob only.
+//! - No implicit widening or casting between integer sizes (user is responsible for consistent layout).
+//! - Evaluation is left‑associative for chains of `&&` / `||` (standard short‑circuit).
+//!
+//! Safety Notes:
+//! - Buffer offsets and lengths are trusted; ensure schema matches actual event layout.
+//! - Integer extraction uses user‑provided `ToI64` implementations; undefined behavior inside those implementations is out of scope.
+//!
+//! See README for a more thorough integration guide.
 #![deny(missing_docs)]
 #![no_std]
 
@@ -33,6 +72,8 @@ use alloc::{
     format,
     string::{String, ToString},
 };
+use core::fmt::Debug;
+mod internal;
 
 /// A span in the input expression, used for diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -726,72 +767,155 @@ impl<'a> Parser<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FieldType {
-    Int,
-    Str,
+/// A trait to convert byte slices to i64 values.
+pub trait ToI64 {
+    /// Converts the given byte slice to an i64.
+    fn to_i64(&self, bytes: &[u8], offset: usize) -> Result<i64, &'static str>;
+}
+
+fn to_bytes(buf: &[u8], offset: usize, len: usize) -> Result<&[u8], &'static str> {
+    if offset + len <= buf.len() {
+        Ok(&buf[offset..offset + len])
+    } else {
+        Err("buffer too small for field")
+    }
+}
+
+/// The type of a field in the schema.
+#[derive(Clone, Copy)]
+#[allow(missing_docs)]
+pub enum FieldType {
+    Integer(&'static dyn ToI64),
+    Bytes,
+    Unsupported,
+}
+
+impl Debug for FieldType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            FieldType::Integer(_) => write!(f, "Integer"),
+            FieldType::Bytes => write!(f, "Bytes"),
+            FieldType::Unsupported => write!(f, "Unsupported"),
+        }
+    }
+}
+
+/// A trait to classify fields at compile time.
+pub trait FieldClassifier {
+    /// The field type.
+    const FIELD_TYPE: FieldType;
 }
 
 /// Declares the available fields and their types for compile-time validation.
 ///
-/// Use `with_int`/`with_str` to register fields the evaluator can read from
-/// the runtime context. Unknown fields in expressions are compile errors.
-#[derive(Debug, Default, Clone)]
+/// Define a schema with the `schema!` macro: each entry supplies the field name,
+/// its `FieldType`, and the (offset, length) describing where the data resides
+/// in a raw event buffer. Integer types implement `FieldClassifier` so you can
+/// write `u32::FIELD_TYPE` directly. Unknown fields referenced in an expression
+/// produce a compile-time `ParseError`.
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Schema {
-    fields: BTreeMap<&'static str, FieldType>,
+    /// The list of fields and their types.
+    fields: &'static [(&'static str, FieldType, usize, usize)],
 }
 
 impl Schema {
-    /// Creates an empty schema.
-    pub fn new() -> Self {
-        Self {
-            fields: BTreeMap::new(),
+    /// Creates a new schema from the given field list.
+    pub fn new(fields: &'static [(&'static str, FieldType, usize, usize)]) -> Self {
+        Self { fields }
+    }
+
+    /// Looks up the type, offset, and length of a field by name.
+    pub fn get(&self, name: &str) -> Option<(FieldType, usize, usize)> {
+        for (n, t, offset, len) in self.fields.iter() {
+            if *n == name {
+                return Some((*t, *offset, *len));
+            }
         }
+        None
     }
 
-    /// Registers an integer field.
-    pub fn with_int(mut self, name: &'static str) -> Self {
-        self.fields.insert(name, FieldType::Int);
-        self
-    }
-
-    /// Registers a string field.
-    pub fn with_str(mut self, name: &'static str) -> Self {
-        self.fields.insert(name, FieldType::Str);
-        self
-    }
-
-    pub(crate) fn get(&self, name: &str) -> Option<FieldType> {
-        self.fields.get(name).copied()
+    /// Looks up the type of a field by name.
+    pub fn get_type(&self, name: &str) -> Option<FieldType> {
+        self.get(name).map(|(t, _, _)| t)
     }
 }
 
-/// Runtime context for expression evaluation.
+/// Helper macro to define a schema inline.
+#[macro_export]
+macro_rules! schema {
+    ($( $name:expr => ($ftype:expr, $offset:expr, $len:expr) ),* $(,)? ) => {
+        {
+            let fields: &'static [(&'static str, $crate::FieldType, usize, usize)] = &[
+                $(
+                    ($name, $ftype, $offset, $len),
+                )*
+            ];
+            $crate::Schema::new(fields)
+        }
+
+    };
+}
+
+/// Runtime context abstraction used during expression evaluation.
 ///
-/// Implement this trait for your event/record type to provide field values
-/// at evaluation time. A blanket impl is provided for `HashMap<String, String>`
-/// for convenience.
+/// Two common implementations are provided:
+/// - `BTreeMap<String,String>` (alloc based, convenient for testing)
+/// - `BufContext` for zero-copy access over a raw byte buffer + schema
+///
+/// Custom contexts can implement this trait to bridge existing telemetry/event
+/// representations without copying. Return `None` for missing fields to trigger
+/// the tri-state `Unknown` logic.
 pub trait Context {
     /// Returns an integer value for the given field, or `None` if missing.
-    fn get_int(&self, name: &str) -> Option<i64>;
-    /// Returns a string value for the given field, or `None` if missing.
-    fn get_str(&self, name: &str) -> Option<&str>;
+    fn get_integer(&self, name: &str) -> Option<i64>;
+    /// Returns a byte slice value for the given field, or `None` if missing.
+    fn get_bytes(&self, name: &str) -> Option<&[u8]>;
 }
 
 impl Context for BTreeMap<String, String> {
-    fn get_int(&self, name: &str) -> Option<i64> {
+    fn get_integer(&self, name: &str) -> Option<i64> {
         self.get(name).and_then(|s| s.parse::<i64>().ok())
     }
-    fn get_str(&self, name: &str) -> Option<&str> {
-        self.get(name).map(|s| s.as_str())
+    fn get_bytes(&self, name: &str) -> Option<&[u8]> {
+        self.get(name).map(|s| s.as_bytes())
+    }
+}
+
+/// Runtime context for evaluating against a byte buffer and schema.
+pub struct BufContext<'a> {
+    buf: &'a [u8],
+    schema: &'a Schema,
+}
+
+impl<'a> BufContext<'a> {
+    /// Creates a new buffer context with the given buffer and schema.
+    pub fn new(buf: &'a [u8], schema: &'a Schema) -> Self {
+        Self { buf, schema }
+    }
+}
+
+impl<'a> Context for BufContext<'a> {
+    fn get_integer(&self, name: &str) -> Option<i64> {
+        let (field_type, offset, _len) = self.schema.get(name)?;
+        match field_type {
+            FieldType::Integer(to_i64_fn) => to_i64_fn.to_i64(self.buf, offset).ok(),
+            _ => None,
+        }
+    }
+    fn get_bytes(&self, name: &str) -> Option<&[u8]> {
+        let (field_type, offset, len) = self.schema.get(name)?;
+        match field_type {
+            FieldType::Bytes => {
+                let bytes = to_bytes(self.buf, offset, len).ok()?;
+                Some(bytes)
+            }
+            _ => None,
+        }
     }
 }
 
 // --------------- Glob matcher ----------------
-fn glob_match(pat: &str, text: &str) -> bool {
-    glob_match_bytes(pat.as_bytes(), text.as_bytes())
-}
-
 fn glob_match_bytes(p: &[u8], t: &[u8]) -> bool {
     glob_match_impl(p, 0, t, 0)
 }
@@ -964,8 +1088,8 @@ fn eval_expr<C: Context>(e: &Expr, schema: &Schema, ctx: &C) -> Tri {
             op,
             rhs,
         } => {
-            match schema.get(field) {
-                Some(FieldType::Int) => match ctx.get_int(field) {
+            match schema.get_type(field) {
+                Some(FieldType::Integer(_)) => match ctx.get_integer(field) {
                     None => Tri::Unknown,
                     Some(mut v) => {
                         if let Some(m) = mask {
@@ -983,26 +1107,27 @@ fn eval_expr<C: Context>(e: &Expr, schema: &Schema, ctx: &C) -> Tri {
                     }
                 },
                 // Type mismatch: The expression expects an integer field, but the schema says it's a string.
-                Some(FieldType::Str) => Tri::False,
-
+                Some(FieldType::Bytes) => Tri::False,
+                Some(FieldType::Unsupported) => Tri::False,
                 None => unreachable!(),
             }
         }
         Expr::StrCmp { field, op, pat } => {
-            match schema.get(field) {
-                Some(FieldType::Str) => match ctx.get_str(field) {
+            match schema.get_type(field) {
+                Some(FieldType::Bytes) => match ctx.get_bytes(field) {
                     None => Tri::Unknown,
                     Some(v) => {
                         let res = match op {
-                            StrOp::Eq => v == pat,
-                            StrOp::Ne => v != pat,
-                            StrOp::Glob => glob_match(pat, v),
+                            StrOp::Eq => v == pat.as_bytes(),
+                            StrOp::Ne => v != pat.as_bytes(),
+                            StrOp::Glob => glob_match_bytes(pat.as_bytes(), v),
                         };
                         if res { Tri::True } else { Tri::False }
                     }
                 },
                 // Type mismatch: The expression expects a string field, but the schema says it's an integer.
-                Some(FieldType::Int) => Tri::False,
+                Some(FieldType::Integer(_)) => Tri::False,
+                Some(FieldType::Unsupported) => Tri::False,
                 None => unreachable!(),
             }
         }
@@ -1028,23 +1153,33 @@ fn validate(expr: &Expr, schema: &Schema) -> Result<(), ParseError> {
             validate(r, schema)
         }
         Expr::Group(inner) => validate(inner, schema),
-        Expr::NumCmp { field, .. } => match schema.get(field) {
+        Expr::NumCmp { field, .. } => match schema.get_type(field) {
             None => Err(ParseError::new(0, 0, format!("unknown field: {}", field))),
-            Some(FieldType::Str) => Err(ParseError::new(
+            Some(FieldType::Bytes) => Err(ParseError::new(
                 0,
                 0,
                 format!("field '{}' is not numeric", field),
             )),
-            Some(FieldType::Int) => Ok(()),
+            Some(FieldType::Integer(_)) => Ok(()),
+            Some(FieldType::Unsupported) => Err(ParseError::new(
+                0,
+                0,
+                format!("field '{}' has unsupported type", field),
+            )),
         },
-        Expr::StrCmp { field, .. } => match schema.get(field) {
+        Expr::StrCmp { field, .. } => match schema.get_type(field) {
             None => Err(ParseError::new(0, 0, format!("unknown field: {}", field))),
-            Some(FieldType::Int) => Err(ParseError::new(
+            Some(FieldType::Integer(_)) => Err(ParseError::new(
                 0,
                 0,
                 format!("field '{}' is not string", field),
             )),
-            Some(FieldType::Str) => Ok(()),
+            Some(FieldType::Bytes) => Ok(()),
+            Some(FieldType::Unsupported) => Err(ParseError::new(
+                0,
+                0,
+                format!("field '{}' has unsupported type", field),
+            )),
         },
     }
 }
@@ -1052,13 +1187,13 @@ fn validate(expr: &Expr, schema: &Schema) -> Result<(), ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn schema_sig_comm_flags_user() -> Schema {
-        Schema::new()
-            .with_int("sig")
-            .with_str("comm")
-            .with_int("flags")
-            .with_str("user")
+        schema! {
+            "sig" => (u32::FIELD_TYPE, 0, 4),
+            "comm" => (FieldType::Bytes, 4, 16),
+            "flags" => (i32::FIELD_TYPE, 20, 4),
+            "user" => (FieldType::Bytes, 24, 16),
+        }
     }
 
     #[test]
@@ -1099,12 +1234,12 @@ mod tests {
 
     #[test]
     fn test_glob_match_primitives() {
-        assert!(super::glob_match("bash*", "bash"));
-        assert!(super::glob_match("bash*", "bash123"));
-        assert!(super::glob_match("b?sh", "bash"));
-        assert!(super::glob_match("b[ae]sh", "bash"));
-        assert!(!super::glob_match("b[!a]sh", "bash"));
-        assert!(!super::glob_match("b[^a]sh", "bash"));
+        assert!(super::glob_match_bytes(b"bash*", b"bash"));
+        assert!(super::glob_match_bytes(b"bash*", b"bash123"));
+        assert!(super::glob_match_bytes(b"b?sh", b"bash"));
+        assert!(super::glob_match_bytes(b"b[ae]sh", b"bash"));
+        assert!(!super::glob_match_bytes(b"b[!a]sh", b"bash"));
+        assert!(!super::glob_match_bytes(b"b[^a]sh", b"bash"));
     }
 
     #[test]
@@ -1190,5 +1325,95 @@ mod tests {
         assert!(c.evaluate(&ctx));
         ctx.insert("comm".into(), "bash".into());
         assert!(!c.evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_numeric_eq_ne() {
+        let schema = schema!(
+            "sig" => (u32::FIELD_TYPE, 0, 4),
+        );
+        let eq = compile_with_schema("sig == 10", schema.clone()).expect("compile eq");
+        let ne = compile_with_schema("sig != 10", schema.clone()).expect("compile ne");
+        let mut ctx = BTreeMap::new();
+        ctx.insert("sig".into(), "10".into());
+        assert!(eq.evaluate(&ctx));
+        assert!(!ne.evaluate(&ctx));
+        ctx.insert("sig".into(), "11".into());
+        assert!(!eq.evaluate(&ctx));
+        assert!(ne.evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_numeric_lt_le_gt_ge() {
+        let schema = schema!(
+            "v" => (u32::FIELD_TYPE, 0, 4),
+        );
+        let lt = compile_with_schema("v < 5", schema.clone()).unwrap();
+        let le = compile_with_schema("v <= 5", schema.clone()).unwrap();
+        let gt = compile_with_schema("v > 5", schema.clone()).unwrap();
+        let ge = compile_with_schema("v >= 5", schema.clone()).unwrap();
+        let mut ctx = BTreeMap::new();
+        ctx.insert("v".into(), "5".into());
+        assert!(!lt.evaluate(&ctx));
+        assert!(le.evaluate(&ctx));
+        assert!(!gt.evaluate(&ctx));
+        assert!(ge.evaluate(&ctx));
+        ctx.insert("v".into(), "4".into());
+        assert!(lt.evaluate(&ctx));
+        assert!(le.evaluate(&ctx));
+        assert!(!gt.evaluate(&ctx));
+        assert!(!ge.evaluate(&ctx));
+        ctx.insert("v".into(), "6".into());
+        assert!(!lt.evaluate(&ctx));
+        assert!(!le.evaluate(&ctx));
+        assert!(gt.evaluate(&ctx));
+        assert!(ge.evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_numeric_mask_ne() {
+        let schema = schema!(
+            "flags" => (i32::FIELD_TYPE, 0, 4),
+        );
+        let cmp = compile_with_schema("flags & 0x10 != 0x10", schema.clone()).unwrap();
+        let mut ctx = BTreeMap::new();
+        ctx.insert("flags".into(), format!("{}", 0x30)); // 0x30 & 0x10 == 0x10 => expression should be false
+        assert!(!cmp.evaluate(&ctx));
+        ctx.insert("flags".into(), format!("{}", 0x20)); // 0x20 & 0x10 == 0x00 => != 0x10 => true
+        assert!(cmp.evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_string_eq_ne_ops() {
+        let schema = schema!(
+            "comm" => (FieldType::Bytes, 0, 16),
+        );
+        let eq = compile_with_schema("comm == bash", schema.clone()).unwrap();
+        let ne = compile_with_schema("comm != bash", schema.clone()).unwrap();
+        let mut ctx = BTreeMap::new();
+        ctx.insert("comm".into(), "bash".into());
+        assert!(eq.evaluate(&ctx));
+        assert!(!ne.evaluate(&ctx));
+        ctx.insert("comm".into(), "zsh".into());
+        assert!(!eq.evaluate(&ctx));
+        assert!(ne.evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_compile_error_string_field_numeric_ops() {
+        let schema = schema!(
+            "comm" => (FieldType::Bytes, 0, 16),
+        );
+        let err = compile_with_schema("comm < 5", schema).unwrap_err();
+        assert!(err.message.contains("not numeric"));
+    }
+
+    #[test]
+    fn test_compile_error_numeric_field_string_glob() {
+        let schema = schema!(
+            "sig" => (u32::FIELD_TYPE, 0, 4),
+        );
+        let err = compile_with_schema("sig ~ bash*", schema).unwrap_err();
+        assert!(err.message.contains("not string"));
     }
 }
