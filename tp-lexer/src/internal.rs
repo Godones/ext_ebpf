@@ -14,7 +14,7 @@ impl<T: Debug> IntegerToI64<T> {
     }
 }
 
-impl<T: Debug + 'static> ToI64 for IntegerToI64<T> {
+impl<T: Debug + 'static + Send + Sync> ToI64 for IntegerToI64<T> {
     fn to_i64(&self, bytes: &[u8], offset: usize) -> Result<i64, &'static str> {
         let ty_id = TypeId::of::<T>();
         let size = core::mem::size_of::<T>();

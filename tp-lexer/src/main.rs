@@ -23,7 +23,7 @@ fn main() {
         "flags" => (get_field_type!(i32), 20, 4),
     );
 
-    println!("Schema: {:?}", schema);
+    println!("Schema: {:#?}", schema);
 
     // Compile the expression (unknown fields or type mismatches error out)
     let compiled = match compile_with_schema(expr, schema) {

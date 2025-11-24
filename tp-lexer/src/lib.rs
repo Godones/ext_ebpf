@@ -768,7 +768,7 @@ impl<'a> Parser<'a> {
 }
 
 /// A trait to convert byte slices to i64 values.
-pub trait ToI64 {
+pub trait ToI64: Send + Sync {
     /// Converts the given byte slice to an i64.
     fn to_i64(&self, bytes: &[u8], offset: usize) -> Result<i64, &'static str>;
 }
@@ -813,15 +813,28 @@ pub trait FieldClassifier {
 /// in a raw event buffer. Integer types implement `FieldClassifier` so you can
 /// write `u32::FIELD_TYPE` directly. Unknown fields referenced in an expression
 /// produce a compile-time `ParseError`.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Default, Clone, Copy)]
 pub struct Schema {
     /// The list of fields and their types.
     fields: &'static [(&'static str, FieldType, usize, usize)],
 }
 
+impl Debug for Schema {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut fmt = f.debug_struct("Schema");
+        for (n, t, offset, len) in self.fields.iter() {
+            fmt.field(
+                n,
+                &format_args!("type: {:?}, offset: {}, length: {}", t, offset, len),
+            );
+        }
+        fmt.finish()
+    }
+}
+
 impl Schema {
     /// Creates a new schema from the given field list.
-    pub fn new(fields: &'static [(&'static str, FieldType, usize, usize)]) -> Self {
+    pub const fn new(fields: &'static [(&'static str, FieldType, usize, usize)]) -> Self {
         Self { fields }
     }
 
