@@ -29,6 +29,21 @@ pub enum PerfEventIoc {
     SetBpf = 1074013192,
 }
 
+#[allow(non_camel_case_types, missing_docs)]
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntEnum)]
+pub enum PerfTypeId {
+    PERF_TYPE_HARDWARE = 0,
+    PERF_TYPE_SOFTWARE = 1,
+    PERF_TYPE_TRACEPOINT = 2,
+    PERF_TYPE_HW_CACHE = 3,
+    PERF_TYPE_RAW = 4,
+    PERF_TYPE_BREAKPOINT = 5,
+    // TODO: Make sure these are correct.
+    PERF_TYPE_KPROBE = 6,
+    PERF_TYPE_UPROBE = 7,
+}
+
 #[derive(Debug, Clone)]
 #[allow(unused)]
 /// `perf_event_open` syscall arguments.
@@ -42,7 +57,7 @@ pub struct PerfProbeArgs {
     /// Size of the perf probe.
     pub size: u32,
     /// Type of the perf probe.
-    pub type_: perf_type_id,
+    pub type_: PerfTypeId,
     /// PID for the perf probe.
     pub pid: i32,
     /// CPU for the perf probe.
@@ -73,11 +88,11 @@ impl PerfProbeArgs {
         group_fd: i32,
         flags: u32,
     ) -> Result<Self> {
-        let ty = perf_type_id::try_from(attr.type_).map_err(|_| BpfError::InvalidArgument)?;
+        let ty = PerfTypeId::try_from(attr.type_).map_err(|_| BpfError::InvalidArgument)?;
         let config = match ty {
-            perf_type_id::PERF_TYPE_MAX | perf_type_id::PERF_TYPE_TRACEPOINT => {
-                PerfProbeConfig::Raw(attr.config)
-            }
+            PerfTypeId::PERF_TYPE_KPROBE
+            | PerfTypeId::PERF_TYPE_UPROBE
+            | PerfTypeId::PERF_TYPE_TRACEPOINT => PerfProbeConfig::Raw(attr.config),
             _ => {
                 let sw_id = perf_sw_ids::try_from(attr.config as u32)
                     .map_err(|_| BpfError::InvalidArgument)?;
@@ -85,7 +100,7 @@ impl PerfProbeArgs {
             }
         };
 
-        let name = if ty == perf_type_id::PERF_TYPE_MAX {
+        let name = if ty == PerfTypeId::PERF_TYPE_KPROBE || ty == PerfTypeId::PERF_TYPE_UPROBE {
             let name_ptr = unsafe { attr.__bindgen_anon_3.config1 } as *const u8;
 
             F::string_from_user_cstr(name_ptr)?
