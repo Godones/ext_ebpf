@@ -115,7 +115,7 @@ pub fn unregister_kretprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps>(
 ) {
     let kprobe = kretprobe.kprobe();
     let kprobe_addr = kprobe.probe_point().break_address();
-    manager.remove_kprobe(&UniProbe::Kretprobe(kretprobe));
+    manager.remove_probe(UniProbe::Kretprobe(kretprobe));
 
     if manager.kprobe_num(kprobe_addr) == 0 {
         kprobe_point_list.remove(&kprobe_addr);

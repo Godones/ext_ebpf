@@ -68,6 +68,16 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> ProbeManager<L, F> {
         self.break_list_len(address)
     }
 
+    pub(crate) fn replace_debug_list_with_new_address(
+        &mut self,
+        old_address: usize,
+        new_address: usize,
+    ) {
+        if let Some(list) = self.debug_list.remove(&old_address) {
+            self.debug_list.insert(new_address, list);
+        }
+    }
+
     #[inline]
     fn break_list_len(&self, address: usize) -> usize {
         self.break_list
@@ -84,10 +94,10 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> ProbeManager<L, F> {
     }
 
     /// Remove a kprobe from the manager.
-    pub fn remove_kprobe(&mut self, probe: &UniProbe<L, F>) {
+    pub fn remove_probe(&mut self, probe: UniProbe<L, F>) {
         let probe_point = probe.probe_point().clone();
-        self.remove_one_break(probe_point.break_address(), probe);
-        self.remove_one_debug(probe_point.debug_address(), probe);
+        self.remove_one_break(probe_point.break_address(), &probe);
+        self.remove_one_debug(probe_point.debug_address(), &probe);
     }
 
     /// Remove a kprobe from the break_list.

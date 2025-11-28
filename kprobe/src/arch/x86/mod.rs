@@ -25,7 +25,7 @@ pub struct X86ProbePoint<F: KprobeAuxiliaryOps> {
     addr: usize,
     old_instruction_ptr: ExecMemType<F>,
     old_instruction_len: usize,
-    user_mode: bool,
+    user_pid: Option<i32>,
     // Dynamic user pointer for handling user space instruction pointer adjustments
     dynamic_user_ptr: AtomicUsize,
     _marker: core::marker::PhantomData<F>,
@@ -34,16 +34,22 @@ pub struct X86ProbePoint<F: KprobeAuxiliaryOps> {
 impl<F: KprobeAuxiliaryOps> Drop for X86ProbePoint<F> {
     fn drop(&mut self) {
         let address = self.addr;
-        F::set_writeable_for_address(address, self.old_instruction_len, true, self.user_mode);
-        // Restore the original instruction at the probe point
-        unsafe {
-            core::ptr::copy(
-                self.old_instruction_ptr.as_ptr(),
-                address as *mut u8,
-                self.old_instruction_len,
-            );
+        F::set_writeable_for_address(address, self.old_instruction_len, self.user_pid, |ptr| {
+            // Restore the original instruction at the probe point
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.old_instruction_ptr.as_ptr(),
+                    ptr,
+                    self.old_instruction_len,
+                );
+            }
+        });
+
+        // Free the dynamic user pointer if it was allocated
+        let dyn_ptr = self.dynamic_user_ptr();
+        if dyn_ptr != 0 {
+            F::free_user_exec_memory(self.user_pid, dyn_ptr as *mut u8);
         }
-        F::set_writeable_for_address(address, self.old_instruction_len, false, self.user_mode);
         log::trace!(
             "X86KprobePoint::drop: Restored instruction at address: {:#x}",
             address
@@ -90,18 +96,18 @@ impl<F: KprobeAuxiliaryOps> ProbeBuilder<F> {
     /// Replace the instruction at the specified address with a breakpoint instruction.
     fn replace_inst(&self) -> Arc<X86ProbePoint<F>> {
         let address = self.symbol_addr + self.offset;
-        let inst_tmp = super::alloc_exec_memory::<F>(self.user_mode);
+        let inst_tmp = super::alloc_exec_memory::<F>(self.user_pid);
 
-        unsafe {
-            core::ptr::copy(
-                address as *const u8,
-                inst_tmp.as_ptr(),
-                MAX_INSTRUCTION_SIZE,
-            );
-        }
+        F::copy_memory(
+            address as *const u8,
+            inst_tmp.as_ptr(),
+            MAX_INSTRUCTION_SIZE,
+            self.user_pid,
+        );
+
+        let buf = unsafe { core::slice::from_raw_parts(inst_tmp.as_ptr(), MAX_INSTRUCTION_SIZE) };
 
         let decoder = yaxpeax_x86::amd64::InstDecoder::default();
-        let buf = unsafe { core::slice::from_raw_parts(inst_tmp.as_ptr(), MAX_INSTRUCTION_SIZE) };
         let inst = decoder.decode_slice(buf).unwrap();
         let len = inst.len().to_const();
         log::trace!("inst: {:?}, len: {:?}", inst.to_string(), len);
@@ -110,17 +116,14 @@ impl<F: KprobeAuxiliaryOps> ProbeBuilder<F> {
             addr: address,
             old_instruction_ptr: inst_tmp,
             old_instruction_len: len as usize,
-            user_mode: self.user_mode,
+            user_pid: self.user_pid,
             dynamic_user_ptr: AtomicUsize::new(0),
             _marker: core::marker::PhantomData,
         });
 
-        F::set_writeable_for_address(address, len as usize, true, self.user_mode);
-        unsafe {
-            core::ptr::write_volatile(address as *mut u8, EBREAK_INST);
-        }
-        F::set_writeable_for_address(address, len as usize, false, self.user_mode);
-
+        F::set_writeable_for_address(address, len as usize, self.user_pid, |ptr| unsafe {
+            core::ptr::write(ptr, EBREAK_INST);
+        });
         log::trace!(
             "Kprobe::install: address: {:#x}, func_name: {:?}",
             address,
@@ -137,22 +140,6 @@ impl<L: RawMutex + 'static, F: KprobeAuxiliaryOps> Probe<L, F> {
     }
 }
 
-impl<F: KprobeAuxiliaryOps> X86ProbePoint<F> {
-    pub(crate) fn dynamic_user_ptr(&self) -> usize {
-        self.dynamic_user_ptr
-            .load(core::sync::atomic::Ordering::SeqCst)
-    }
-
-    pub(crate) fn set_dynamic_user_ptr(&self, ptr: usize) {
-        self.dynamic_user_ptr
-            .store(ptr, core::sync::atomic::Ordering::SeqCst);
-    }
-
-    pub(crate) fn old_instruction_len(&self) -> usize {
-        self.old_instruction_len
-    }
-}
-
 impl<F: KprobeAuxiliaryOps> KprobeOps for X86ProbePoint<F> {
     fn return_address(&self) -> usize {
         self.addr + self.old_instruction_len
@@ -163,11 +150,35 @@ impl<F: KprobeAuxiliaryOps> KprobeOps for X86ProbePoint<F> {
     }
 
     fn debug_address(&self) -> usize {
-        self.old_instruction_ptr.as_ptr() as usize + self.old_instruction_len
+        let dynamic_user_ptr = self.dynamic_user_ptr();
+        if dynamic_user_ptr != 0 {
+            dynamic_user_ptr + self.old_instruction_len
+        } else {
+            self.old_instruction_ptr.as_ptr() as usize + self.old_instruction_len
+        }
     }
 
     fn break_address(&self) -> usize {
         self.addr
+    }
+
+    fn dynamic_user_ptr(&self) -> usize {
+        self.dynamic_user_ptr
+            .load(core::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn set_dynamic_user_ptr(&self, ptr: usize) -> usize {
+        self.dynamic_user_ptr
+            .store(ptr, core::sync::atomic::Ordering::SeqCst);
+        ptr + self.old_instruction_len
+    }
+
+    fn old_instruction_len(&self) -> usize {
+        self.old_instruction_len
+    }
+
+    fn pid(&self) -> Option<i32> {
+        self.user_pid
     }
 }
 

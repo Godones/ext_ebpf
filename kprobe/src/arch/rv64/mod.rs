@@ -32,7 +32,7 @@ pub struct Rv64ProbePoint<F: KprobeAuxiliaryOps> {
     addr: usize,
     old_instruction: OpcodeTy,
     old_instruction_ptr: ExecMemType<F>,
-    user_mode: bool,
+    user_pid: Option<i32>,
     // Dynamic user pointer for handling user space instruction pointer adjustments
     dynamic_user_ptr: AtomicUsize,
     _marker: core::marker::PhantomData<F>,
@@ -73,25 +73,22 @@ impl<F: KprobeAuxiliaryOps> Drop for Rv64ProbePoint<F> {
         let address = self.addr;
         match self.old_instruction {
             OpcodeTy::Inst16(inst_16) => {
-                F::set_writeable_for_address(address, 2, true, self.user_mode);
-                unsafe {
-                    core::ptr::write(address as *mut u16, inst_16);
-                }
-                F::set_writeable_for_address(address, 2, false, self.user_mode);
+                F::set_writeable_for_address(address, 2, self.user_pid, |ptr| unsafe {
+                    core::ptr::write(ptr as *mut u16, inst_16);
+                });
             }
             OpcodeTy::Inst32(inst_32) => {
-                F::set_writeable_for_address(address, 4, true, self.user_mode);
-                unsafe {
-                    core::ptr::write(address as *mut u32, inst_32);
-                }
-                F::set_writeable_for_address(address, 4, false, self.user_mode);
+                F::set_writeable_for_address(address, 4, self.user_pid, |ptr| unsafe {
+                    core::ptr::write(ptr as *mut u32, inst_32);
+                });
             }
         }
-        log::trace!(
-            "Kprobe::uninstall: address: {:#x}, old_instruction: {:?}",
-            address,
-            self.old_instruction
-        );
+        // Free the dynamic user pointer if it was allocated
+        let dyn_ptr = self.dynamic_user_ptr();
+        if dyn_ptr != 0 {
+            F::free_user_exec_memory(self.user_pid, dyn_ptr as *mut u8);
+        }
+        log::trace!("Kprobe::uninstall: address: {:#x}", address,);
     }
 }
 
@@ -112,19 +109,26 @@ impl<F: KprobeAuxiliaryOps> ProbeBuilder<F> {
     /// Replace the instruction at the specified address with a breakpoint instruction.
     fn replace_inst(&self) -> Arc<Rv64ProbePoint<F>> {
         let address = self.symbol_addr + self.offset;
-        let inst_16 = unsafe { core::ptr::read(address as *const u16) };
+
+        let mut inst_16 = 0u16;
+        F::copy_memory(
+            address as *const u8,
+            &mut inst_16 as *mut u16 as *mut u8,
+            2,
+            self.user_pid,
+        );
         // See <https://elixir.bootlin.com/linux/v6.10.2/source/arch/riscv/kernel/probes/kprobes.c#L68>
         let is_inst_16 = (inst_16 & INSN_LENGTH_MASK) != INSN_LENGTH_32;
 
-        let inst_tmp_ptr = super::alloc_exec_memory::<F>(self.user_mode);
+        let inst_tmp_ptr = super::alloc_exec_memory::<F>(self.user_pid);
 
         let old_instruction;
         if is_inst_16 {
             old_instruction = OpcodeTy::Inst16(inst_16);
             unsafe {
-                F::set_writeable_for_address(address, 2, true, self.user_mode);
-                core::ptr::write(address as *mut u16, C_EBREAK_INST as u16);
-                F::set_writeable_for_address(address, 2, false, self.user_mode);
+                F::set_writeable_for_address(address, 2, self.user_pid, |ptr| {
+                    core::ptr::write(ptr as *mut u16, C_EBREAK_INST as u16);
+                });
                 // inst_16 :0-16
                 // c.ebreak:16-32
                 core::ptr::write(inst_tmp_ptr.as_ptr() as *mut u16, inst_16);
@@ -134,12 +138,18 @@ impl<F: KprobeAuxiliaryOps> ProbeBuilder<F> {
                 );
             }
         } else {
-            let inst_32 = unsafe { core::ptr::read(address as *const u32) };
+            let mut inst_32 = 0u32;
+            F::copy_memory(
+                address as *const u8,
+                &mut inst_32 as *mut u32 as *mut u8,
+                4,
+                self.user_pid,
+            );
             old_instruction = OpcodeTy::Inst32(inst_32);
             unsafe {
-                F::set_writeable_for_address(address, 2, true, self.user_mode);
-                core::ptr::write(address as *mut u16, C_EBREAK_INST as _);
-                F::set_writeable_for_address(address, 2, false, self.user_mode);
+                F::set_writeable_for_address(address, 4, self.user_pid, |ptr| {
+                    core::ptr::write(ptr as *mut u16, C_EBREAK_INST as _);
+                });
                 // inst_32 :0-32
                 // ebreak  :32-64
                 core::ptr::write(inst_tmp_ptr.as_ptr() as *mut u32, inst_32);
@@ -154,7 +164,7 @@ impl<F: KprobeAuxiliaryOps> ProbeBuilder<F> {
             old_instruction,
             old_instruction_ptr: inst_tmp_ptr,
             addr: address,
-            user_mode: self.user_mode,
+            user_pid: self.user_pid,
             dynamic_user_ptr: AtomicUsize::new(0),
             _marker: core::marker::PhantomData,
         };
@@ -166,25 +176,6 @@ impl<F: KprobeAuxiliaryOps> ProbeBuilder<F> {
             point.old_instruction
         );
         Arc::new(point)
-    }
-}
-
-impl<F: KprobeAuxiliaryOps> Rv64ProbePoint<F> {
-    pub(crate) fn dynamic_user_ptr(&self) -> usize {
-        self.dynamic_user_ptr
-            .load(core::sync::atomic::Ordering::SeqCst)
-    }
-
-    pub(crate) fn set_dynamic_user_ptr(&self, ptr: usize) {
-        self.dynamic_user_ptr
-            .store(ptr, core::sync::atomic::Ordering::SeqCst);
-    }
-
-    pub(crate) fn old_instruction_len(&self) -> usize {
-        match self.old_instruction {
-            OpcodeTy::Inst16(_) => 2 * 2,
-            OpcodeTy::Inst32(_) => 2 * 4,
-        }
     }
 }
 
@@ -202,14 +193,48 @@ impl<F: KprobeAuxiliaryOps> KprobeOps for Rv64ProbePoint<F> {
     }
 
     fn debug_address(&self) -> usize {
-        match self.old_instruction {
-            OpcodeTy::Inst16(_) => self.old_instruction_ptr.as_ptr() as usize + 2,
-            OpcodeTy::Inst32(_) => self.old_instruction_ptr.as_ptr() as usize + 4,
+        let dynamic_user_ptr = self.dynamic_user_ptr();
+        if dynamic_user_ptr == 0 {
+            match self.old_instruction {
+                OpcodeTy::Inst16(_) => self.old_instruction_ptr.as_ptr() as usize + 2,
+                OpcodeTy::Inst32(_) => self.old_instruction_ptr.as_ptr() as usize + 4,
+            }
+        } else {
+            match self.old_instruction {
+                OpcodeTy::Inst16(_) => dynamic_user_ptr + 2,
+                OpcodeTy::Inst32(_) => dynamic_user_ptr + 4,
+            }
         }
     }
 
     fn break_address(&self) -> usize {
         self.addr
+    }
+
+    fn dynamic_user_ptr(&self) -> usize {
+        self.dynamic_user_ptr
+            .load(core::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Set the dynamic user pointer and return the new debug address.
+    fn set_dynamic_user_ptr(&self, ptr: usize) -> usize {
+        self.dynamic_user_ptr
+            .store(ptr, core::sync::atomic::Ordering::SeqCst);
+        match self.old_instruction {
+            OpcodeTy::Inst16(_) => ptr + 2,
+            OpcodeTy::Inst32(_) => ptr + 4,
+        }
+    }
+
+    fn old_instruction_len(&self) -> usize {
+        match self.old_instruction {
+            OpcodeTy::Inst16(_) => 2 * 2,
+            OpcodeTy::Inst32(_) => 2 * 4,
+        }
+    }
+
+    fn pid(&self) -> Option<i32> {
+        self.user_pid
     }
 }
 

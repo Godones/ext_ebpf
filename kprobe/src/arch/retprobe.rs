@@ -95,28 +95,49 @@ pub struct RetprobeInstance {
 /// The builder for creating a retprobe.
 pub struct RetprobeBuilder<L: RawMutex + 'static> {
     symbol: Option<String>,
+    enable: bool,
     symbol_addr: usize,
     maxactive: u32,
     data: Vec<Box<dyn ProbeData>>,
     ret_handler: Option<ProbeHandler>,
     entry_handler: Option<ProbeHandler>,
     event_callbacks: BTreeMap<u32, ProbeHandler>,
+
     _marker: core::marker::PhantomData<L>,
 }
 
 impl<L: RawMutex + 'static> RetprobeBuilder<L> {
     /// Create a new kretprobe builder.
-    pub fn new(symbol: Option<String>, symbol_addr: usize, maxactive: u32) -> Self {
+    pub fn new(maxactive: u32) -> Self {
         RetprobeBuilder {
-            symbol,
-            symbol_addr,
+            symbol: None,
+            symbol_addr: 0,
             maxactive,
             data: Vec::new(),
             ret_handler: None,
             entry_handler: None,
+            enable: false,
             event_callbacks: BTreeMap::new(),
             _marker: core::marker::PhantomData,
         }
+    }
+
+    /// Build the kprobe with enable or disable.
+    pub fn with_enable(mut self, enable: bool) -> Self {
+        self.enable = enable;
+        self
+    }
+
+    /// Build the kprobe with a symbol address.
+    pub fn with_symbol_addr(mut self, symbol_addr: usize) -> Self {
+        self.symbol_addr = symbol_addr;
+        self
+    }
+
+    /// Build the kprobe with a symbol.
+    pub fn with_symbol(mut self, symbol: String) -> Self {
+        self.symbol = Some(symbol);
+        self
     }
 
     pub(crate) fn handler(&self) -> (Option<ProbeHandler>, Option<ProbeHandler>) {
@@ -188,9 +209,9 @@ impl<F: KprobeAuxiliaryOps + 'static, L: RawMutex + 'static> From<RetprobeBuilde
             fault_handler: None,
             event_callbacks: BTreeMap::new(),
             probe_point: None,
-            enable: true,
+            enable: value.enable,
             data: Some(Box::new(retprobe_data)),
-            user_mode: false,
+            user_pid: None,
             _marker: core::marker::PhantomData,
         }
     }

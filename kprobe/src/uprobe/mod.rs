@@ -1,12 +1,59 @@
+use alloc::sync::Arc;
+
 use lock_api::RawMutex;
 
 use crate::{
-    KprobeAuxiliaryOps, KprobeOps, ProbeManager, PtRegs, arch::Probe, clear_single_step,
-    setup_single_step,
+    KprobeAuxiliaryOps, KprobeOps, ProbeBuilder, ProbeManager, ProbePointList, PtRegs, UniProbe,
+    arch::Probe, clear_single_step, setup_single_step,
 };
 
 /// The uprobe structure for the current architecture.
 pub type Uprobe<L, F> = Probe<L, F>;
+
+/// Register a uprobe.
+///
+/// # Parameters
+/// - `manager`: The uprobe manager.
+/// - `uprobe_point_list`: The list of uprobe points.
+/// - `uprobe_builder`: The uprobe builder.
+///
+/// # Returns
+/// - An registered uprobe.
+///
+pub fn register_uprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps>(
+    manager: &mut ProbeManager<L, F>,
+    uprobe_point_list: &mut ProbePointList<F>,
+    uprobe_builder: ProbeBuilder<F>,
+) -> Arc<Uprobe<L, F>> {
+    assert!(
+        uprobe_builder.user_pid.is_some(),
+        "The builder must be for uprobe"
+    );
+    let uprobe = crate::__register_kprobe(uprobe_point_list, uprobe_builder);
+    let uprobe = Arc::new(uprobe);
+    manager.insert_probe(UniProbe::Uprobe(uprobe.clone()));
+    uprobe
+}
+
+/// Unregister a uprobe.
+///
+/// # Parameters
+/// - `manager`: The uprobe manager.
+/// - `uprobe_point_list`: The list of uprobe points.
+/// - `uprobe`: The uprobe to unregister.
+///
+pub fn unregister_uprobe<L: RawMutex + 'static, F: KprobeAuxiliaryOps>(
+    manager: &mut ProbeManager<L, F>,
+    uprobe_point_list: &mut ProbePointList<F>,
+    uprobe: Arc<Uprobe<L, F>>,
+) {
+    let uprobe_addr = uprobe.probe_point().break_address();
+    manager.remove_probe(UniProbe::Uprobe(uprobe));
+
+    if manager.kprobe_num(uprobe_addr) == 0 {
+        uprobe_point_list.remove(&uprobe_addr);
+    }
+}
 
 /// Run uprobe which has been registered on the address
 ///
@@ -31,7 +78,6 @@ pub fn uprobe_handler_from_break<L: RawMutex + 'static, F: KprobeAuxiliaryOps>(
             }
         }
 
-        // TODO: For uprobe, we may need to adjust the user space instruction pointer here.
         let point = uprobe_list[0].probe_point();
         let dynamic_user_ptr = point.dynamic_user_ptr();
         if dynamic_user_ptr != 0 {
@@ -39,13 +85,24 @@ pub fn uprobe_handler_from_break<L: RawMutex + 'static, F: KprobeAuxiliaryOps>(
         } else {
             let old_instruction_len = point.old_instruction_len();
             let single_step_address = point.single_step_address() as *mut u8;
-            let user_ptr = F::alloc_user_exec_memory(|ptr| {
+            let pid = point.pid();
+            let user_ptr = F::alloc_user_exec_memory(pid, |ptr| {
                 unsafe {
                     // Copy the old instruction back to user space
                     core::ptr::copy_nonoverlapping(single_step_address, ptr, old_instruction_len);
                 }
             });
-            point.set_dynamic_user_ptr(user_ptr as usize);
+
+            // the original debug address
+            let old_debug_address = point.debug_address();
+
+            // after this, point.debug_address() will return the new debug address(user_ptr+ debug instruction len)
+            let new_debug_address = point.set_dynamic_user_ptr(user_ptr as usize);
+
+            // beacause the debug address of uprobe is dynamically created, so the key value of the debug_list maintained in the original uprobe_manager needs to be updated
+            uprobe_manager
+                .replace_debug_list_with_new_address(old_debug_address, new_debug_address);
+
             // update the single step address to the copied instruction
             setup_single_step(pt_regs, user_ptr as usize);
         }

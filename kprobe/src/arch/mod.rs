@@ -36,8 +36,13 @@ cfg_if::cfg_if! {
     }
 }
 
+// mod rv64;
+// pub use rv64::*;
+// /// The probe point structure for the current architecture.
+// pub type ProbePoint<F> = Rv64ProbePoint<F>;
+
 /// The operations available for kprobes.
-pub trait KprobeOps: Send {
+pub(crate) trait KprobeOps: Send {
     /// The address of the instruction that program should return to.
     fn return_address(&self) -> usize;
     /// The address of the instruction that saved the original instruction.
@@ -54,20 +59,37 @@ pub trait KprobeOps: Send {
     ///
     /// It is usually equal to the address of the instruction that used to set the probe point.
     fn break_address(&self) -> usize;
+
+    /// Get the dynamic user pointer.
+    fn dynamic_user_ptr(&self) -> usize;
+    /// Set the dynamic user pointer and return the new debug address.
+    fn set_dynamic_user_ptr(&self, ptr: usize) -> usize;
+    /// Get the length of the original instruction.
+    fn old_instruction_len(&self) -> usize;
+    /// Get the pid of the user process, if applicable.
+    fn pid(&self) -> Option<i32>;
 }
 
 /// The auxiliary operations required for kprobes.
 pub trait KprobeAuxiliaryOps: Send + Debug {
+    /// Copy memory from source to destination. If `user_pid` is `Some(pid)`, it indicates that the `src` is in user space.
+    /// The `dst` is always in kernel space.
+    fn copy_memory(src: *const u8, dst: *mut u8, len: usize, user_pid: Option<i32>);
     /// Enable or disable write permission for the specified address.
-    fn set_writeable_for_address(address: usize, len: usize, writable: bool, user_mode: bool);
+    fn set_writeable_for_address<F: FnOnce(*mut u8)>(
+        address: usize,
+        len: usize,
+        user_pid: Option<i32>,
+        action: F,
+    );
     /// Allocate executable memory(one page)
     fn alloc_kernel_exec_memory() -> *mut u8;
     /// Deallocate executable memory(one page)
     fn free_kernel_exec_memory(ptr: *mut u8);
     /// Allocate user executable memory(one page)
-    fn alloc_user_exec_memory<F: FnOnce(*mut u8)>(action: F) -> *mut u8;
+    fn alloc_user_exec_memory<F: FnOnce(*mut u8)>(pid: Option<i32>, action: F) -> *mut u8;
     /// Deallocate user executable memory(one page)
-    fn free_user_exec_memory(ptr: *mut u8);
+    fn free_user_exec_memory(pid: Option<i32>, ptr: *mut u8);
     /// Insert a kretprobe instance to the current task
     fn insert_kretprobe_instance_to_task(instance: retprobe::RetprobeInstance);
     /// Pop a kretprobe instance from the current task
@@ -106,8 +128,8 @@ impl<F: KprobeAuxiliaryOps> Drop for ExecMemType<F> {
     }
 }
 
-fn alloc_exec_memory<F: KprobeAuxiliaryOps>(user_mode: bool) -> ExecMemType<F> {
-    if user_mode {
+fn alloc_exec_memory<F: KprobeAuxiliaryOps>(user_pid: Option<i32>) -> ExecMemType<F> {
+    if user_pid.is_some() {
         ExecMemType::User(Box::into_raw(Box::new([0u8; 4096])) as usize)
     } else {
         ExecMemType::Kernel(F::alloc_kernel_exec_memory() as usize)
@@ -156,32 +178,62 @@ pub struct ProbeBuilder<F: KprobeAuxiliaryOps> {
     pub(crate) probe_point: Option<Arc<ProbePoint<F>>>,
     pub(crate) enable: bool,
     pub(crate) data: Option<Box<dyn ProbeData>>,
-    pub(crate) user_mode: bool,
+    pub(crate) user_pid: Option<i32>,
     pub(crate) _marker: core::marker::PhantomData<F>,
+}
+
+impl<F: KprobeAuxiliaryOps> Default for ProbeBuilder<F> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<F: KprobeAuxiliaryOps> ProbeBuilder<F> {
     /// Create a new kprobe builder.
-    pub fn new(symbol: Option<String>, symbol_addr: usize, offset: usize, enable: bool) -> Self {
+    pub fn new() -> Self {
         ProbeBuilder {
-            symbol,
-            symbol_addr,
-            offset,
+            symbol: None,
+            symbol_addr: 0,
+            offset: 0,
             pre_handler: None,
             post_handler: None,
             event_callbacks: BTreeMap::new(),
             fault_handler: None,
             probe_point: None,
-            enable,
+            enable: false,
             data: None,
-            user_mode: false,
+            user_pid: None,
             _marker: core::marker::PhantomData,
         }
     }
 
+    /// Build the kprobe with enable or disable.
+    pub fn with_enable(mut self, enable: bool) -> Self {
+        self.enable = enable;
+        self
+    }
+
+    /// Build the kprobe with a symbol address.
+    pub fn with_symbol_addr(mut self, symbol_addr: usize) -> Self {
+        self.symbol_addr = symbol_addr;
+        self
+    }
+
+    /// Build the kprobe with an offset.
+    pub fn with_offset(mut self, offset: usize) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    /// Build the kprobe with a symbol.
+    pub fn with_symbol(mut self, symbol: String) -> Self {
+        self.symbol = Some(symbol);
+        self
+    }
+
     /// Build the kprobe with user mode flag.
-    pub fn with_user_mode(mut self, user_mode: bool) -> Self {
-        self.user_mode = user_mode;
+    pub fn with_user_mode(mut self, user_pid: i32) -> Self {
+        self.user_pid = Some(user_pid);
         self
     }
 

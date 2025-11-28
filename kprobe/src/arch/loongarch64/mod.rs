@@ -15,6 +15,7 @@ use crate::{KprobeOps, ProbeBasic, ProbeBuilder};
 // const BRK_KPROBE_BP: u64 = 10;
 // const BRK_KPROBE_SSTEPBP: u64 = 11;
 const EBREAK_INST: u32 = 0x002a0000;
+const EBREAK_INST_LEN: usize = 4;
 
 /// The kprobe structure.
 pub struct Probe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
@@ -27,7 +28,7 @@ pub struct Probe<L: RawMutex + 'static, F: KprobeAuxiliaryOps> {
 pub struct LA64ProbePoint<F: KprobeAuxiliaryOps> {
     addr: usize,
     old_instruction_ptr: ExecMemType<F>,
-    user_mode: bool,
+    user_pid: Option<i32>,
     // Dynamic user pointer for handling user space instruction pointer adjustments
     dynamic_user_ptr: AtomicUsize,
     _marker: core::marker::PhantomData<F>,
@@ -67,13 +68,24 @@ impl<F: KprobeAuxiliaryOps> Drop for LA64ProbePoint<F> {
     fn drop(&mut self) {
         let address = self.addr;
         let inst_tmp_ptr = self.old_instruction_ptr.as_ptr();
-        let inst_32 = unsafe { core::ptr::read(inst_tmp_ptr as *const u32) };
-        F::set_writeable_for_address(address, 4, true, self.user_mode);
-        unsafe {
-            core::ptr::write(address as *mut u32, inst_32);
+        F::set_writeable_for_address(address, EBREAK_INST_LEN, self.user_pid, |ptr| {
+            unsafe {
+                // Restore the original instruction at the probe address
+                core::ptr::copy_nonoverlapping(
+                    inst_tmp_ptr as *const u8,
+                    ptr as *mut u8,
+                    EBREAK_INST_LEN,
+                );
+            }
+        });
+
+        // Free the dynamic user pointer if it was allocated
+        let dyn_ptr = self.dynamic_user_ptr();
+        if dyn_ptr != 0 {
+            F::free_user_exec_memory(self.user_pid, dyn_ptr as *mut u8);
         }
-        F::set_writeable_for_address(address, 4, false, self.user_mode);
-        log::trace!("Kprobe::uninstall: address: {address:#x}, old_instruction: {inst_32:?}");
+
+        log::trace!("Kprobe::uninstall: address: {address:#x}");
     }
 }
 
@@ -95,13 +107,21 @@ impl<F: KprobeAuxiliaryOps> ProbeBuilder<F> {
     fn replace_inst(&self) -> Arc<LA64ProbePoint<F>> {
         let address = self.symbol_addr + self.offset;
 
-        let inst_tmp_ptr = super::alloc_exec_memory::<F>(self.user_mode);
+        let inst_tmp_ptr = super::alloc_exec_memory::<F>(self.user_pid);
+        let mut inst_32 = 0u32;
+        F::copy_memory(
+            address as *const u8,
+            &mut inst_32 as *mut u32 as *mut u8,
+            4,
+            self.user_pid,
+        );
 
-        let inst_32 = unsafe { core::ptr::read(address as *const u32) };
         unsafe {
-            F::set_writeable_for_address(address, 4, true, self.user_mode);
-            core::ptr::write(address as *mut u32, EBREAK_INST);
-            F::set_writeable_for_address(address, 4, false, self.user_mode);
+            F::set_writeable_for_address(address, EBREAK_INST_LEN, self.user_pid, |ptr| {
+                // Replace the original instruction with the breakpoint instruction
+                core::ptr::write(ptr as *mut u32, EBREAK_INST);
+            });
+            // Save the original instruction to the temporary memory
             // inst_32 :0-32
             // ebreak  :32-64
             core::ptr::write(inst_tmp_ptr.as_ptr() as *mut u32, inst_32);
@@ -114,7 +134,7 @@ impl<F: KprobeAuxiliaryOps> ProbeBuilder<F> {
         let point = LA64ProbePoint {
             addr: address,
             old_instruction_ptr: inst_tmp_ptr,
-            user_mode: self.user_mode,
+            user_pid: self.user_pid,
             dynamic_user_ptr: AtomicUsize::new(0),
             _marker: core::marker::PhantomData,
         };
@@ -129,22 +149,6 @@ impl<F: KprobeAuxiliaryOps> ProbeBuilder<F> {
     }
 }
 
-impl<F: KprobeAuxiliaryOps> LA64ProbePoint<F> {
-    pub(crate) fn dynamic_user_ptr(&self) -> usize {
-        self.dynamic_user_ptr
-            .load(core::sync::atomic::Ordering::SeqCst)
-    }
-
-    pub(crate) fn set_dynamic_user_ptr(&self, ptr: usize) {
-        self.dynamic_user_ptr
-            .store(ptr, core::sync::atomic::Ordering::SeqCst);
-    }
-
-    pub(crate) fn old_instruction_len(&self) -> usize {
-        4 * 2
-    }
-}
-
 impl<F: KprobeAuxiliaryOps> KprobeOps for LA64ProbePoint<F> {
     fn return_address(&self) -> usize {
         self.addr + 4
@@ -155,11 +159,36 @@ impl<F: KprobeAuxiliaryOps> KprobeOps for LA64ProbePoint<F> {
     }
 
     fn debug_address(&self) -> usize {
-        self.old_instruction_ptr.as_ptr() as usize + 4
+        let dyn_ptr = self.dynamic_user_ptr();
+        if dyn_ptr != 0 {
+            dyn_ptr + EBREAK_INST_LEN
+        } else {
+            self.old_instruction_ptr.as_ptr() as usize + 4
+        }
     }
 
     fn break_address(&self) -> usize {
         self.addr
+    }
+
+    fn dynamic_user_ptr(&self) -> usize {
+        self.dynamic_user_ptr
+            .load(core::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn set_dynamic_user_ptr(&self, ptr: usize) -> usize {
+        self.dynamic_user_ptr
+            .store(ptr, core::sync::atomic::Ordering::SeqCst);
+
+        ptr + EBREAK_INST_LEN
+    }
+
+    fn old_instruction_len(&self) -> usize {
+        4 * 2
+    }
+
+    fn pid(&self) -> Option<i32> {
+        self.user_pid
     }
 }
 /// The register state at the time of the probe.
